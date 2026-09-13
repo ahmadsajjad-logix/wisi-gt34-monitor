@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WISI GT34 Monitoring Scope Presentation — V11.3L</title>
+<style>
+  :root{
+    --navy:#173b63;
+    --blue:#2a6398;
+    --light:#f4f7fb;
+    --card:#ffffff;
+    --text:#1f2937;
+    --muted:#64748b;
+    --border:#d9e2ec;
+    --good:#e8f6ee;
+    --warn:#fff6dc;
+    --soft:#edf4fa;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    font-family:"Segoe UI",Arial,Helvetica,sans-serif;
+    background:#eef2f7;
+    color:var(--text);
+  }
+  .deck{
+    width:min(1200px,96vw);
+    margin:24px auto 50px;
+  }
+  .slide{
+    min-height:675px;
+    background:var(--card);
+    margin:0 0 28px;
+    border:1px solid var(--border);
+    box-shadow:0 8px 28px rgba(20,46,78,.08);
+    border-radius:14px;
+    overflow:hidden;
+    position:relative;
+    page-break-after:always;
+  }
+  .hero{
+    background:linear-gradient(135deg,var(--navy),var(--blue));
+    color:white;
+    padding:72px 72px 50px;
+  }
+  .hero h1{font-size:44px;line-height:1.08;margin:0 0 18px}
+  .hero .sub{font-size:22px;opacity:.94;max-width:850px}
+  .hero .stamp{position:absolute;bottom:36px;left:72px;font-size:14px;opacity:.82}
+  .content{padding:48px 58px 44px}
+  h2{font-size:32px;color:var(--navy);margin:0 0 26px}
+  h3{color:var(--blue);margin:18px 0 10px}
+  p{line-height:1.55}
+  .lead{font-size:20px;color:#334155;max-width:1000px}
+  .metrics{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:16px;
+    margin:28px 0;
+  }
+  .metric{
+    padding:24px 18px;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:linear-gradient(180deg,#fff,#f8fbff);
+    text-align:center;
+  }
+  .metric .n{font-size:40px;font-weight:750;color:var(--navy)}
+  .metric .l{font-size:14px;color:var(--muted);margin-top:5px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .card{
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:20px;
+    background:#fff;
+  }
+  .card.soft{background:var(--soft)}
+  .card.good{background:var(--good)}
+  .card.warn{background:var(--warn)}
+  .big{font-size:29px;font-weight:750;color:var(--navy)}
+  .muted{color:var(--muted)}
+  ul{line-height:1.55;padding-left:22px}
+  li{margin:7px 0}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{border:1px solid var(--border);padding:10px 12px;vertical-align:top}
+  th{background:var(--navy);color:white;text-align:left}
+  tbody tr:nth-child(even){background:#f8fafc}
+  .flow{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:10px;
+    align-items:center;
+    margin-top:34px;
+  }
+  .flow .box{
+    border:1px solid var(--border);border-radius:10px;padding:16px 10px;
+    text-align:center;background:#fff;min-height:100px;display:flex;align-items:center;justify-content:center;
+  }
+  .arrow{text-align:center;font-size:30px;color:var(--blue)}
+  .parameter-grid{
+    display:grid;grid-template-columns:repeat(2,1fr);gap:10px 18px;
+  }
+  .param{
+    border-bottom:1px solid var(--border);padding:9px 0;
+  }
+  .param b{color:var(--navy)}
+  .note{
+    border-left:5px solid var(--blue);
+    background:var(--soft);
+    padding:15px 18px;
+    border-radius:7px;
+    margin-top:20px;
+  }
+  .footer{
+    position:absolute;bottom:18px;left:58px;right:58px;
+    display:flex;justify-content:space-between;color:#94a3b8;font-size:12px
+  }
+  .small{font-size:13px}
+  @media(max-width:850px){
+    .metrics,.grid3,.grid2,.parameter-grid{grid-template-columns:1fr}
+    .flow{grid-template-columns:1fr}
+    .arrow{transform:rotate(90deg)}
+    .hero,.content{padding:34px 24px}
+    .hero h1{font-size:34px}
+    .slide{min-height:auto;padding-bottom:52px}
+    .footer{position:static;margin:30px 24px 0}
+  }
+  @media print{
+    body{background:white}
+    .deck{width:100%;margin:0}
+    .slide{box-shadow:none;border:0;border-radius:0;margin:0;min-height:100vh}
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <section class="slide hero">
+    <h1>WISI GT34 / PRTG<br>Monitoring Scope Report</h1>
+    <div class="sub">
+      Current production monitoring footprint, service coverage and monitored technical parameters
+    </div>
+    <div class="stamp">Checkpoint V11.3L • September 2026</div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>1. Monitoring Scope at a Glance</h2>
+      <p class="lead">
+        The system continuously monitors satellite television services received through four WISI Tangram chassis and eight GT34 modules.
+      </p>
+      <div class="metrics">
+        <div class="metric"><div class="n">4</div><div class="l">WISI chassis / IRDs</div></div>
+        <div class="metric"><div class="n">8</div><div class="l">GT34 modules</div></div>
+        <div class="metric"><div class="n">43</div><div class="l">Monitored carrier / multiplex inputs</div></div>
+        <div class="metric"><div class="n">168</div><div class="l">DVB service instances</div></div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="n">43</div><div class="l">Distinct RF frequency/polarization combinations</div></div>
+        <div class="metric"><div class="n">43</div><div class="l">Final PRTG carrier sensors</div></div>
+        <div class="metric"><div class="n">44</div><div class="l">Maximum live PRTG channels per sensor</div></div>
+        <div class="metric"><div class="n">15</div><div class="l">Days of SQLite history</div></div>
+      </div>
+      <div class="note">
+        <b>Simple interpretation:</b> the project watches 43 satellite carrier/multiplex receptions. Those multiplexes collectively contain 168 DVB service instances, including television, radio and other service types.
+      </div>
+    </div>
+    <div class="footer"><span>WISI GT34 Monitoring Scope</span><span>1</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>2. What Is a Frequency, Carrier, Multiplex and Channel?</h2>
+      <div class="grid2">
+        <div class="card soft">
+          <div class="big">Frequency / Carrier</div>
+          <p>The satellite RF signal tuned by the IRD, identified by frequency, polarization and symbol rate.</p>
+        </div>
+        <div class="card soft">
+          <div class="big">Multiplex</div>
+          <p>A single digital transport stream carried on one satellite carrier. One multiplex can contain many television, radio or data services.</p>
+        </div>
+        <div class="card good">
+          <div class="big">DVB Service</div>
+          <p>An individual service identified by a Service ID (SID), such as a TV channel, radio service, regional feed or data service.</p>
+        </div>
+        <div class="card good">
+          <div class="big">Elementary Stream</div>
+          <p>The actual video, audio or other encoded component carried inside a DVB service, identified through stream/PID information.</p>
+        </div>
+      </div>
+      <div class="flow">
+        <div class="box"><b>Satellite RF<br>Frequency</b></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Transport Stream<br>/ Multiplex</b></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Multiple TV / Radio / Data Services</b></div>
+      </div>
+    </div>
+    <div class="footer"><span>Concepts for non-technical audience</span><span>2</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>3. Physical Monitoring Infrastructure</h2>
+      <table>
+        <thead><tr><th>PRTG Label</th><th>Chassis IP</th><th>GT34 Modules</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td>WISI-IRD-01</td><td>192.168.3.27</td><td>M1, M5</td><td>Satellite TV technical monitoring</td></tr>
+          <tr><td>WISI-IRD-02</td><td>192.168.3.45</td><td>M1, M5</td><td>Satellite TV technical monitoring</td></tr>
+          <tr><td>WISI-IRD-03</td><td>192.168.3.8</td><td>M1, M5</td><td>Satellite TV technical monitoring</td></tr>
+          <tr><td>WISI-IRD-04</td><td>192.168.3.9</td><td>M1, M5</td><td>Satellite TV technical monitoring</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        These four chassis provide eight GT34 modules. The final logical inventory is based on the WISI web-interface/SNMP discovery model, not merely on low-level tuner IDs.
+      </div>
+    </div>
+    <div class="footer"><span>Infrastructure</span><span>3</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>4. Final Logical Monitoring Footprint</h2>
+      <div class="grid3">
+        <div class="card"><div class="big">74</div><p>Logical inputs discovered across the fleet</p></div>
+        <div class="card good"><div class="big">43</div><p>Active TV-bearing carrier/multiplex inputs selected for production monitoring</p></div>
+        <div class="card"><div class="big">168</div><p>Active DVB service instances found across those monitored multiplexes</p></div>
+      </div>
+      <h3>Distribution by chassis</h3>
+      <table>
+        <thead><tr><th>Chassis</th><th>Logical Inputs</th><th>Active Carrier / Multiplex Inputs</th><th>DVB Service Instances</th></tr></thead>
+        <tbody>
+          <tr><td>192.168.3.8</td><td>26</td><td>16</td><td>48</td></tr>
+          <tr><td>192.168.3.9</td><td>16</td><td>7</td><td>40</td></tr>
+          <tr><td>192.168.3.27</td><td>16</td><td>11</td><td>21</td></tr>
+          <tr><td>192.168.3.45</td><td>16</td><td>9</td><td>59</td></tr>
+          <tr><th>Total</th><th>74</th><th>43</th><th>168</th></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="footer"><span>Authoritative Inventory V6</span><span>4</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>5. How Many Frequencies and Multiplexes?</h2>
+      <div class="metrics">
+        <div class="metric"><div class="n">43</div><div class="l">Distinct monitored frequencies</div></div>
+        <div class="metric"><div class="n">43</div><div class="l">Distinct frequency/polarization carrier combinations</div></div>
+        <div class="metric"><div class="n">43</div><div class="l">Monitored multiplex/carrier inputs</div></div>
+        <div class="metric"><div class="n">168</div><div class="l">Service instances inside those multiplexes</div></div>
+      </div>
+      <p class="lead">
+        In the current authoritative V6 inventory, each selected production carrier uses a distinct monitored RF frequency/polarization combination.
+      </p>
+      <div class="note">
+        A multiplex is not the same thing as one TV channel. A single multiplex can contain several channels and services. This is why 43 monitored multiplex/carrier inputs produce 168 DVB service instances.
+      </div>
+    </div>
+    <div class="footer"><span>RF and multiplex scope</span><span>5</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>6. What Services Are Being Received?</h2>
+      <div class="grid2">
+        <div class="card good">
+          <div class="big">TV / Video Services</div>
+          <p>All 43 production carrier inputs were proven TV-bearing at carrier level through explicit elementary-stream evidence.</p>
+        </div>
+        <div class="card">
+          <div class="big">Radio / Audio Services</div>
+          <p>Some multiplexes also contain radio/audio-only services. These remain part of service-integrity monitoring even though they do not need video.</p>
+        </div>
+        <div class="card warn">
+          <div class="big">Data / Unknown</div>
+          <p>A service may be present without recognized video or audio elementary-stream metadata. Such cases are reported as metadata/integrity conditions, not automatically as black video.</p>
+        </div>
+        <div class="card">
+          <div class="big">Unavailable Expected Services</div>
+          <p>If an expected SID disappears, the monitoring system treats the missing service as a service-integrity fault.</p>
+        </div>
+      </div>
+      <div class="note">
+        <b>Current final scope:</b> 168 active DVB service instances. A refreshed V6-wide classification is required before publishing a new definitive breakdown of unique TV vs radio vs data service names. An older 38-carrier scan had a different classification total and must not be substituted for the current 43-carrier inventory.
+      </div>
+    </div>
+    <div class="footer"><span>Service coverage</span><span>6</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>7. Core Parameters Monitored — Explained Simply</h2>
+      <div class="parameter-grid">
+        <div class="param"><b>1. Carrier / TS Health</b><br><span class="muted">Overall answer: is the satellite signal and its digital transport stream usable?</span></div>
+        <div class="param"><b>2. Demod Lock</b><br><span class="muted">Whether the receiver has successfully locked onto the satellite signal.</span></div>
+        <div class="param"><b>3. Transport Stream Present</b><br><span class="muted">Whether the digital TV data stream is actually arriving after RF lock.</span></div>
+        <div class="param"><b>4. Video Present</b><br><span class="muted">Whether recognized video stream information exists for the monitored TV-bearing carrier.</span></div>
+        <div class="param"><b>5. Service Integrity Health</b><br><span class="muted">Whether the expected TV/radio services are still present and technically identifiable.</span></div>
+        <div class="param"><b>6. RF Level</b><br><span class="muted">Strength of the received satellite signal.</span></div>
+        <div class="param"><b>7. SNR</b><br><span class="muted">Signal-to-noise quality: how clearly the useful signal stands above noise.</span></div>
+        <div class="param"><b>8. BER</b><br><span class="muted">Bit Error Rate: how many digital transmission errors are being detected.</span></div>
+        <div class="param"><b>9. Frequency</b><br><span class="muted">The satellite RF frequency being monitored.</span></div>
+        <div class="param"><b>10. Symbol Rate</b><br><span class="muted">The signaling rate used by the digital satellite carrier.</span></div>
+        <div class="param"><b>11. TS Bitrate</b><br><span class="muted">How much transport-stream data is being received per second.</span></div>
+        <div class="param"><b>12. TSID</b><br><span class="muted">Transport Stream ID: identifies the multiplex.</span></div>
+        <div class="param"><b>13. NID</b><br><span class="muted">Network ID: identifies the broadcasting network context.</span></div>
+        <div class="param"><b>14. ONID</b><br><span class="muted">Original Network ID: identifies the original DVB network.</span></div>
+        <div class="param"><b>15. Missing Services</b><br><span class="muted">Expected channels/services that are no longer present.</span></div>
+        <div class="param"><b>16. Unexpected Services</b><br><span class="muted">New or unplanned services appearing in a multiplex.</span></div>
+        <div class="param"><b>17. ES Metadata Unavailable</b><br><span class="muted">A service is present, but its elementary-stream details cannot currently be confirmed.</span></div>
+      </div>
+    </div>
+    <div class="footer"><span>17 core parameter categories</span><span>7</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>8. Additional Technical Information Monitored</h2>
+      <p class="lead">The 44-channel PRTG limit does not mean only 44 facts are collected.</p>
+      <div class="grid2">
+        <div class="card">
+          <h3>Shown as PRTG channels where selected</h3>
+          <ul>
+            <li>Critical RF and transport health</li>
+            <li>Service-integrity health</li>
+            <li>Per-service health channels where historically registered</li>
+            <li>Selected counts and identifiers</li>
+          </ul>
+        </div>
+        <div class="card soft">
+          <h3>Retained in rich status / database</h3>
+          <ul>
+            <li>Configured/detected modulation and FEC</li>
+            <li>ISI / MIS and PLS where returned</li>
+            <li>LNB / IF details where returned</li>
+            <li>Network and provider information</li>
+            <li>Full expected/current/running service detail</li>
+            <li>Elementary-stream counts and PID/stream details</li>
+            <li>Missing, ES-N/A and unexpected-service detail</li>
+          </ul>
+        </div>
+      </div>
+      <div class="note">
+        <b>Design principle:</b> PRTG channels are the bounded visual/alarm surface; rich status text provides immediate engineering detail; SQLite preserves the full observation for 15 days.
+      </div>
+    </div>
+    <div class="footer"><span>PRTG + rich status + SQLite</span><span>8</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>9. Monitoring Architecture</h2>
+      <div class="flow">
+        <div class="box"><b>WISI GT34<br>IRD Fleet</b></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Structured SNMP +<br>Web Interface Data</b></div>
+        <div class="arrow">→</div>
+        <div class="box"><b>Python Monitoring<br>& Service Integrity</b></div>
+      </div>
+      <div class="flow">
+        <div class="box"><b>PRTG<br>Visualization</b></div>
+        <div class="arrow">+</div>
+        <div class="box"><b>SQLite<br>15-Day History</b></div>
+        <div class="arrow">+</div>
+        <div class="box"><b>Immediate Python<br>Alarm / Recovery Email</b></div>
+      </div>
+      <div class="note">
+        PRTG is the dashboard. Python remains authoritative for monitoring logic and email notifications.
+      </div>
+    </div>
+    <div class="footer"><span>System architecture</span><span>9</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>10. What the Monitoring System Can Detect</h2>
+      <div class="grid3">
+        <div class="card warn"><h3>Carrier Failure</h3><p>Loss of demodulator lock on the satellite carrier.</p></div>
+        <div class="card warn"><h3>Transport Failure</h3><p>Carrier remains locked but the MPEG/DVB transport stream disappears.</p></div>
+        <div class="card warn"><h3>Service Failure</h3><p>An expected SID disappears or its elementary-stream metadata becomes unavailable.</p></div>
+        <div class="card"><h3>RF Degradation</h3><p>Changes in RF level, SNR or BER can be tracked where returned by the IRD.</p></div>
+        <div class="card"><h3>Configuration Change</h3><p>Frequency, symbol rate, service counts, IDs and other transport/service attributes can be observed.</p></div>
+        <div class="card"><h3>Unexpected Service</h3><p>New/unplanned SIDs appearing within a monitored multiplex are reported.</p></div>
+      </div>
+    </div>
+    <div class="footer"><span>Operational detection scope</span><span>10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>11. What the System Does Not Claim</h2>
+      <div class="grid2">
+        <div class="card warn">
+          <h3>No automatic decoded-picture judgment</h3>
+          <p>ES metadata unavailability is not the same as proving that a TV picture is black or visually off-air.</p>
+        </div>
+        <div class="card warn">
+          <h3>No unsupported parameter fabrication</h3>
+          <p>If the WISI interface does not expose a value reliably, the system does not invent it.</p>
+        </div>
+        <div class="card">
+          <h3>No name-based TV/radio classification</h3>
+          <p>Service type is determined from stream evidence rather than from the channel name.</p>
+        </div>
+        <div class="card">
+          <h3>No assumption that every service carries video</h3>
+          <p>Radio/audio-only services can be legitimate and still pass service-integrity monitoring.</p>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span>Interpretation boundaries</span><span>11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="content">
+      <h2>12. Management Summary</h2>
+      <div class="metrics">
+        <div class="metric"><div class="n">43</div><div class="l">Distinct RF frequencies / carrier inputs</div></div>
+        <div class="metric"><div class="n">43</div><div class="l">Multiplexes under continuous monitoring</div></div>
+        <div class="metric"><div class="n">168</div><div class="l">DVB service instances being observed</div></div>
+        <div class="metric"><div class="n">17+</div><div class="l">Core technical parameter categories, plus detailed status metadata</div></div>
+      </div>
+      <div class="card good">
+        <p class="lead">
+          The project provides continuous technical visibility from the satellite carrier level down to individual DVB service integrity, while preserving detailed observations for historical review and generating immediate alarm/recovery notifications.
+        </p>
+      </div>
+      <div class="note">
+        The architecture is designed for regulatory monitoring: stable PRTG visualization, evidence-based service identification, 15-day historical data, and immediate Python-controlled alerts.
+      </div>
+    </div>
+    <div class="footer"><span>WISI GT34 / PRTG Monitoring Scope Report</span><span>12</span></div>
+  </section>
+
+</div>
+</body>
+</html>
