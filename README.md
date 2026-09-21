@@ -1,99 +1,312 @@
 # WISI GT34 Monitor
 
-Private production checkpoint for WISI Tangram GT34 satellite IRD monitoring.
+Private production monitoring system for WISI Tangram GT34 satellite IRDs.
 
-## Capabilities
+The system provides centralized monitoring of satellite carrier, transport-stream and service-integrity parameters across multiple WISI GT34 chassis, with SQLite persistence, PRTG visualization and Python-authoritative alarm/recovery processing.
 
-- multi-chassis WISI GT34 collection;
-- SQLite persistence and 15-day TV43 history;
-- PRTG EXE/Script Advanced integration;
-- authoritative logical-input/service discovery;
-- carrier, TS and expected-service integrity monitoring;
-- Python-owned alarm/recovery policy and duplicate suppression;
-- fixed PRTG presentation schema capped at 44 live channels per sensor.
+## Production architecture
 
-## Current production scope
+The production system consists of:
 
-The current deployment covers four WISI chassis, eight GT34 modules and 43 authoritative TV-bearing logical carriers. PRTG uses one sensor per logical carrier.
+- multiple WISI Tangram GT34 chassis and modules;
+- centralized Python-based acquisition and monitoring;
+- SQLite time-series and operational persistence;
+- authoritative logical carrier/service inventory;
+- deterministic logical-input mapping;
+- PRTG EXE/Script Advanced visualization;
+- Python-owned alarm/recovery state management;
+- SMTP-based transmission-alert delivery;
+- Windows Scheduled Tasks for continuous operation.
 
-PRTG is the visualization layer. Python remains authoritative for alarm state and email delivery. PRTG notification triggers are intentionally not used.
+PRTG is the visualization layer.
 
-## Alarm policy
+Python remains authoritative for transmission alarm state, duplicate suppression, recovery processing and email delivery. PRTG notification triggers are intentionally not used for production transmission alerts.
 
-- Immediate alarm; no debounce delay.
-- Carrier unlock or TS loss: one DOWN notification covering all affected multiplex services.
-- Individual expected-service failure: one DOWN notification for only that service.
-- No repeat notification while the same alarm episode remains active.
-- Immediate recovery notification.
-- Recovery includes total downtime.
+## Monitoring model
 
-## Agreed email presentation
+The monitoring architecture distinguishes between:
 
-Production notifications use the **Transmission Alert** format with:
+- physical WISI chassis;
+- GT34 modules;
+- configured logical inputs/carriers;
+- low-level tuner objects;
+- transport streams;
+- DVB services;
+- elementary streams/PIDs.
 
-- date/time stamp in PKT;
-- channel name;
-- satellite name;
-- frequency band;
-- `❌ DOWN` or `✅ UP`;
-- total downtime for recovery;
-- PEMRA logo from `PEMRA_Logo.png`;
-- automated transmission-monitoring footer.
+Logical WISI channel identity and low-level tuner identity are not assumed to be interchangeable.
 
-## PRTG stable schema
+Carrier identification and correlation use deterministic configuration and RF/service evidence rather than positional assumptions.
 
-Latest installer checkpoint:
+## Production monitoring scope
 
-`install_tv43_prtg_stable_v113j.ps1`
+The established production deployment monitors the authoritative TV-bearing carrier inventory across the configured WISI GT34 fleet.
 
-V11.3J is the successful stable-schema checkpoint. It preserves the proven Phase 4 wrapper contract and adds SQLite lock resilience:
+Monitoring includes, where supported by the deployed GT34 interfaces:
+
+- demodulator/carrier lock;
+- RF level;
+- carrier-to-noise / SNR;
+- BER-related measurements;
+- configured frequency;
+- symbol rate;
+- modulation/FEC information;
+- transport-stream availability and bitrate;
+- TS/service identifiers;
+- expected DVB service presence;
+- elementary-stream/PID evidence;
+- PCR-related information;
+- service-integrity state;
+- configuration/inventory drift.
+
+The system monitors only parameters actually exposed and validated through the deployed WISI interfaces. Unsupported parameters are not fabricated or inferred.
+
+## Authoritative identity resolution
+
+The production implementation does not assume:
+
+```text
+logical channel = tuner index
+```
+
+Logical carrier identity is resolved using authoritative configuration and RF/service evidence.
+
+Relevant correlation evidence can include:
+
+```text
+chassis
+module
+configured logical input
+frequency
+polarization
+symbol rate
+service identifiers
+RF measurements
+transport-stream evidence
+```
+
+Ambiguous mappings must fail closed rather than silently binding a logical service to the wrong tuner object.
+
+## PRTG integration
+
+PRTG uses EXE/Script Advanced sensors to display the authoritative monitoring state.
+
+The production presentation uses a fixed, bounded schema.
+
+Key design rules:
+
+- maximum **44 live PRTG channels per sensor**;
+- stable channel identities;
+- no dynamic channel proliferation;
+- additional technical detail remains available through rich sensor status text and SQLite;
+- PRTG historical channel objects are not treated as authoritative monitoring inventory;
+- PRTG notification triggers are not used for production transmission email.
+
+The established wrapper contract is:
 
 ```text
 wisi_gt34_carrier.bat --tv43 --host <host> --module <module> --channel <channel>
 ```
 
-The maximum live PRTG return remains **44 channels**. Additional technical detail remains in sensor status text and SQLite.
+## SQLite monitoring database
+
+SQLite is the central persistence layer for monitoring observations, carrier/service history and alarm-policy processing.
+
+The monitoring system records time-series information independently of PRTG so that:
+
+- short-duration events can be retained;
+- carrier/service history can be investigated;
+- alarm decisions do not depend on the PRTG scan interval;
+- service-integrity evidence remains available outside PRTG;
+- monitoring and visualization remain logically separated.
+
+TV43 carrier/service history uses the established retention policy.
+
+Database contention or application/database errors must not be classified as transmission outages.
+
+## Alarm architecture
+
+Transmission alerts are generated by the Python alarm-policy layer.
+
+The alarm state machine provides:
+
+- **15-second DOWN persistence** before a transmission alarm qualifies;
+- **10-second UP persistence** before recovery qualifies;
+- detection of qualifying transmission faults;
+- one notification when an alarm episode becomes active;
+- duplicate suppression while the same episode remains active;
+- recovery detection;
+- one recovery notification when the episode clears;
+- persisted episode/history information.
+
+Alarm state is not owned by PRTG.
+
+## Alarm policy
+
+Production policy distinguishes carrier/TS failures from individual expected-service failures.
+
+### Carrier or transport-stream failure
+
+When the authoritative carrier is unavailable, or the transport stream is unavailable under the applicable policy, the affected multiplex services are represented as unavailable under the carrier-level event.
+
+### Expected-service integrity failure
+
+When the carrier and transport stream remain available but an expected DVB service fails the established service-integrity criteria, the event is associated with that expected service rather than declaring the complete carrier unavailable.
+
+The system does not infer decoded-picture failure merely from unavailable elementary-stream metadata.
+
+## Transmission Alert email
+
+Production alarm and recovery notifications use the approved **Transmission Alert** presentation.
+
+The standard notification contains:
+
+- date/time;
+- PKT time reference;
+- channel/service name;
+- satellite information;
+- frequency band;
+- `❌ DOWN` state for alarm notifications;
+- `✅ UP` state for recovery notifications;
+- total downtime on recovery;
+- PEMRA logo;
+- automated transmission-monitoring footer.
+
+The production renderer and alarm semantics are separate concerns. Presentation changes must not silently modify alarm detection or episode state.
+
+## Email delivery
+
+SMTP credentials are supplied outside source control.
+
+Expected configuration is provided through environment variables such as:
+
+```text
+WISI_SMTP_HOST
+WISI_SMTP_PORT
+WISI_SMTP_USERNAME
+WISI_SMTP_PASSWORD
+WISI_EMAIL_FROM
+WISI_EMAIL_TO
+```
+
+Actual credentials must never be committed to the repository.
+
+Synthetic presentation testing must use the dedicated format-test path and must not create, clear, rearm or modify real production alarm episodes.
+
+## Windows production operation
+
+Normal production operation is Windows Scheduled-Task driven.
+
+The established tasks include:
+
+```text
+WISI GT34 Monitor
+WISI GT34 TV43 Alarm Policy
+```
+
+Normal startup order is:
+
+```text
+1. WISI GT34 Monitor
+2. WISI GT34 TV43 Alarm Policy
+```
+
+Normal shutdown/maintenance order is the reverse:
+
+```text
+1. WISI GT34 TV43 Alarm Policy
+2. WISI GT34 Monitor
+```
+
+This prevents the alarm-policy layer from continuing to evaluate stale monitoring state while the collector is intentionally offline.
 
 ## Security
 
 Operational credentials and runtime data are deliberately excluded from source control.
 
-The repository version of `email_notifier.py` reads SMTP configuration from environment variables. See `.env.example`.
+Do not commit:
 
-Do not commit PRTG passhashes, SMTP passwords, runtime databases, logs or local secret files.
+- SMTP usernames/passwords or application passwords;
+- SNMP community strings;
+- PRTG passhashes;
+- authentication/session material;
+- production SQLite databases;
+- runtime logs;
+- local secret files;
+- temporary diagnostic exports containing credentials.
 
-## Status
+Repository examples must contain placeholders only.
 
-This repository is a private checkpoint taken after the successful V11.3J run. Monitoring, history, PRTG integration and the alarm engine are operational. The final presentation policy is frozen at a maximum of 44 live PRTG channels per sensor, with overflow detail retained in rich status text and 15-day SQLite history. Exact final verification of the HTML email renderer against the agreed production screenshots remains the next controlled follow-up.
+Before any public release, perform a fresh secret scan and rotate any credential that may previously have appeared in source history.
 
-See `docs/CURRENT_STATUS.md`.
+## Engineering rules
 
+The production implementation follows these rules:
 
-## V11.3K — email presentation checkpoint
+- do not fabricate OIDs, endpoints, tags, units or thresholds;
+- do not infer unsupported monitoring parameters;
+- do not equate logical WISI input identity with low-level tuner index without deterministic evidence;
+- do not classify TV/radio solely from service names;
+- do not require every DVB service in a multiplex to contain video;
+- do not interpret missing ES metadata as proof of black/off-air decoded video;
+- do not classify SQLite/application errors as broadcast outages;
+- do not dynamically exceed the bounded PRTG presentation schema;
+- do not use PRTG notification triggers as the production transmission-alert engine;
+- do not expose production credentials in source, documentation, screenshots or logs.
 
-Presentation-only update. Alarm timing, duplicate suppression, recovery
-semantics, PRTG schema, 44-channel cap, SQLite retention and monitoring logic
-are unchanged.
+## Historical checkpoints
 
-`tv43_alarm_policy_final.py` renders the agreed HTML `Transmission Alert`
-format with PKT timestamp, channel name, Paksat MM1, C-band, DOWN/UP state,
-recovery downtime, inline PEMRA logo and the automated-notification footer.
+### V11.3J
 
-`send_tv43_format_test.py` sends the exact same production renderer with
-synthetic data. It does not read, create, rearm, clear, or modify alarm
-episodes, so commissioning emails are not re-sent.
+Established the successful stable PRTG schema and SQLite lock-resilience checkpoint while preserving the proven wrapper contract.
 
+### V11.3K
 
-## V11.3L — screenshot-matched email presentation
+Updated email presentation while leaving alarm timing, duplicate suppression, recovery semantics, PRTG schema and monitoring logic unchanged.
 
-Email presentation was aligned to the approved alarm/recovery screenshots:
+### V11.3L
 
-- PEMRA logo is emoji-sized and inline at the beginning of the italic footer;
-- footer has no separate centered logo or horizontal separator;
-- alarm body ends at `Channel status: ❌ DOWN`;
-- recovery body adds `Total downtime: HH:MM:SS` after `Channel status: ✅ UP`;
-- no extra alarm-start or recovery-clear rows are displayed in the recovery email.
+Aligned the HTML Transmission Alert presentation with the approved alarm/recovery screenshots.
 
-Monitoring logic, immediate notification semantics, duplicate suppression,
-service-integrity logic, PRTG schema, 44-channel cap and SQLite retention are
-unchanged.
+The V11.3L presentation includes:
+
+- PKT timestamp;
+- channel name;
+- satellite information;
+- C-band identification;
+- DOWN/UP state;
+- recovery downtime;
+- inline PEMRA logo;
+- automated-notification footer.
+
+The synthetic format-test path does not modify real alarm episodes.
+
+## Current production freeze
+
+The current production system is frozen at Git commit:
+
+```text
+4e7b8924727183ea3e6e2fdf178d3be254fde604
+```
+
+This commit is the reference point for the presently deployed production implementation.
+
+Future changes must be incremental and evidence-driven. The established architecture, monitoring semantics, identity model, alarm policy, PRTG presentation model and security boundaries must not be redesigned or silently changed without explicit approval.
+
+Production troubleshooting should begin from this frozen checkpoint rather than reconstructing previously solved discovery, mapping, PRTG or alarm-policy work.
+
+## Repository documentation
+
+Additional engineering and operational documentation is maintained under:
+
+```text
+docs/
+```
+
+Start with:
+
+```text
+docs/CURRENT_STATUS.md
+```
+
+The repository and its documentation together form the engineering checkpoint for continued development, maintenance and deployment of the WISI GT34 monitoring system.
