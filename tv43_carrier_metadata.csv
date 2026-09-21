@@ -1,0 +1,44 @@
+﻿host,module,channel,frequency_mhz,polarisation,symbol_rate_mbd,carrier_name,satellite_name,frequency_band,validation_status
+192.168.3.27,1,1,4012,H,5.2,Aaj News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,1,3,3873,V,8.0,Bol News,Apstar 7 (76.5°E),C-band,validated
+192.168.3.27,1,5,3987,H,3.6,GTV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,1,6,3988,V,1.6,BuyPass TV,Apstar 7 (76.5°E),C-band,validated
+192.168.3.27,1,7,3999,H,6.4,Green Entertainment,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,1,8,3804,H,3.2,365 News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,5,1,3852,H,1.6,Awaz TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,5,5,4078,H,4.8,Kay 2,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,5,6,4020,H,6.8,M News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,5,7,3983,H,3.2,Roze TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.27,5,8,3772,H,2.4,Paigham Urdu,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,1,3,3933,H,4.0,GNN HD,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,1,4,3975,H,9.6,Express News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,1,5,3870,H,13.333,PTV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,1,6,4165,H,6.0,Dunya News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,1,7,4006,H,5.0,Neo TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,5,1,11566,H,8.333,AzerSpace,Azerspace 2 / Intelsat 38 (45.1°E),Ku-band,validated
+192.168.3.45,5,3,3830,H,3.2,Such TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.45,5,5,11552,H,18.333,AzerSpace2,Azerspace 2 / Intelsat 38 (45.1°E),Ku-band,validated
+192.168.3.45,5,6,4102,H,1.6,Mashriq,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,2,4068,H,4.0,Suno TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,3,3748,H,7.992,City News Network,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,4,3797,H,2.4,KTN,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,7,4029,H,3.6,Samma News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,8,4125,H,16.1,HUM Network,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,10,4180,H,16.855,Geo News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,11,3967,H,1.6,RT News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,12,3741,H,3.2,Virtual TV,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,15,3734,H,7.999,WAQT News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,1,16,4151,H,1.6,Time News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,5,1,3740,V,3.75,Public News,Apstar 7 (76.5°E),C-band,validated
+192.168.3.8,5,2,4042,H,4.1,Aik News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,5,5,3723,H,3.2,ABN News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,5,7,3805,H,2.0,AGN News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,5,8,3768,H,4.8,92 News HD,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.8,5,9,3847,H,8.8,Telenest-Paksat,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.9,1,1,3745,V,5.0,News One,Apstar 7 (76.5°E),C-band,validated
+192.168.3.9,1,2,4060,V,30.0,ARY,Apstar 7 (76.5°E),C-band,validated
+192.168.3.9,1,5,3753,V,8.33,Arsh TV,Apstar 7 (76.5°E),C-band,validated
+192.168.3.9,1,7,3820,V,30.0,Telenest-Apstar,Apstar 7 (76.5°E),C-band,validated
+192.168.3.9,5,1,3833,H,2.035,Dawn News,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.9,5,6,4099,H,3.2,LTN Family,Paksat MM1 (38.2°E),C-band,validated
+192.168.3.9,5,8,3794,H,1.6,Mehran TV,Paksat MM1 (38.2°E),C-band,validated

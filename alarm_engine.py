@@ -229,6 +229,7 @@ def latest_tuner_rows(
             GROUP BY tuner_id
         )
         SELECT
+            c.host AS chassis_host,
             m.module_number,
             m.module_name,
             m.remote_ip,
@@ -251,10 +252,13 @@ def latest_tuner_rows(
           ON t.id = tsamp.tuner_id
         JOIN modules m
           ON m.id = t.module_id
+        JOIN chassis c
+          ON c.id = m.chassis_id
         LEFT JOIN ts_samples x
           ON x.tuner_id = t.id
          AND x.sampled_at = tsamp.sampled_at
         ORDER BY
+            c.host,
             m.module_number,
             t.input_id
         """
@@ -431,6 +435,7 @@ def evaluate_tuner(
     # ------------------------------------------------------------------
 
     expected_active = (
+        str(row["chassis_host"]),
         module_number,
         input_id,
     ) in EXPECTED_ACTIVE_INPUTS
@@ -873,6 +878,7 @@ def evaluate_latest_snapshot(
                         row["sampled_at"]
                     ),
                     "expected_active": (
+                        str(row["chassis_host"]),
                         int(row["module_number"]),
                         int(row["input_id"]),
                     ) in EXPECTED_ACTIVE_INPUTS,

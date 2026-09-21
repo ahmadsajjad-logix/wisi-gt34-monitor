@@ -245,6 +245,63 @@ def parse_tuner_flux(xml_text):
     return results
 
 
+def parse_tuner_config(xml_text):
+    """Parse tuner.xmlc configured RF identity indexed by tuner object id.
+
+    Values are retained in WISI's native integer units as well as normalized
+    MHz/MBd convenience fields.  No live lock/state inference is performed here.
+    """
+    uixml = parse_xml(xml_text)
+    results = {}
+
+    for tuner_el in uixml.findall(".//tuners/tuner"):
+        tuner_id = to_int(tuner_el.get("id"))
+        if tuner_id is None:
+            continue
+
+        params_el = tuner_el.find("params")
+        lnb_el = tuner_el.find("lnb_data")
+
+        frequency_raw = to_int(element_text(params_el, "frequency"))
+        symbol_rate_raw = to_int(element_text(params_el, "symbolrate"))
+        polarisation_code = to_int(element_text(params_el, "polarisation"))
+
+        # Proven on the current WISI tuner.xmlc: configured frequency and
+        # symbolrate are expressed in kHz / symbols-per-second respectively.
+        # Keep raw values too so matching never depends on display conversion.
+        frequency_mhz = (
+            frequency_raw / 1000.0 if frequency_raw is not None else None
+        )
+        symbol_rate_mbd = (
+            symbol_rate_raw / 1_000_000.0 if symbol_rate_raw is not None else None
+        )
+
+        polarisation = {0: "H", 1: "V"}.get(polarisation_code)
+
+        results[tuner_id] = {
+            "tuner_object_id": tuner_id,
+            "enabled": to_bool(tuner_el.get("enabled")),
+            "state": to_int(tuner_el.get("state")),
+            "type": to_int(tuner_el.get("type")),
+            "type_name": tuner_el.get("type_name"),
+            "frequency_raw": frequency_raw,
+            "frequency_mhz": frequency_mhz,
+            "symbol_rate_raw": symbol_rate_raw,
+            "symbol_rate_mbd": symbol_rate_mbd,
+            "polarisation_code": polarisation_code,
+            "polarisation": polarisation,
+            "fec_config": to_int(element_text(params_el, "fec")),
+            "modulation_config": to_int(element_text(params_el, "modulation")),
+            "is_id_config": to_int(element_text(params_el, "is_id")),
+            "lnb": to_int(element_text(lnb_el, "lnb")),
+            "lo_frequency_raw": to_int(element_text(lnb_el, "lo_frequency")),
+            "voltage": to_int(element_text(lnb_el, "voltage")),
+            "tone": to_int(element_text(lnb_el, "tone")),
+        }
+
+    return results
+
+
 # ============================================================
 # TRANSPORT STREAM BITRATE
 # ============================================================

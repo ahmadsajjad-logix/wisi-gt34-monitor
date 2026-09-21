@@ -1,0 +1,978 @@
+{
+  "schema_version": 1,
+  "carriers": {
+    "192.168.3.27|M1C1": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Digital 1"
+        },
+        {
+          "sid": 257,
+          "name": "Digital 1"
+        }
+      ]
+    },
+    "192.168.3.27|M1C3": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 3,
+      "services": [
+        {
+          "sid": 1,
+          "name": "BOL News Urdu"
+        }
+      ]
+    },
+    "192.168.3.27|M1C5": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 257,
+          "name": "GTV-HD MM1"
+        }
+      ]
+    },
+    "192.168.3.27|M1C6": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 6,
+      "services": [
+        {
+          "sid": 16,
+          "name": "ByPass"
+        }
+      ]
+    },
+    "192.168.3.27|M1C7": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 1,
+          "name": "GreenEnt - HD"
+        }
+      ]
+    },
+    "192.168.3.27|M1C8": {
+      "host": "192.168.3.27",
+      "module": 1,
+      "channel": 8,
+      "services": [
+        {
+          "sid": 1,
+          "name": "365 NEWS HD"
+        }
+      ]
+    },
+    "192.168.3.27|M5C1": {
+      "host": "192.168.3.27",
+      "module": 5,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Awaz Tv"
+        }
+      ]
+    },
+    "192.168.3.27|M5C5": {
+      "host": "192.168.3.27",
+      "module": 5,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Avt khyber HD"
+        },
+        {
+          "sid": 2,
+          "name": "Khyber News HD"
+        },
+        {
+          "sid": 3,
+          "name": "Kay-2 HD"
+        },
+        {
+          "sid": 4,
+          "name": "Khyber ME HD"
+        }
+      ]
+    },
+    "192.168.3.27|M5C6": {
+      "host": "192.168.3.27",
+      "module": 5,
+      "channel": 6,
+      "services": [
+        {
+          "sid": 1,
+          "name": "AAN TV - HD"
+        },
+        {
+          "sid": 2,
+          "name": "M-News"
+        },
+        {
+          "sid": 3,
+          "name": "M-World"
+        },
+        {
+          "sid": 4,
+          "name": "M-Sports"
+        },
+        {
+          "sid": 5,
+          "name": "ME"
+        },
+        {
+          "sid": 6,
+          "name": "PLANET-6"
+        }
+      ]
+    },
+    "192.168.3.27|M5C7": {
+      "host": "192.168.3.27",
+      "module": 5,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Roze TV"
+        },
+        {
+          "sid": 2,
+          "name": "Roze Excel HD"
+        }
+      ]
+    },
+    "192.168.3.27|M5C8": {
+      "host": "192.168.3.27",
+      "module": 5,
+      "channel": 8,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Paigham Urdu"
+        }
+      ]
+    },
+    "192.168.3.45|M1C3": {
+      "host": "192.168.3.45",
+      "module": 1,
+      "channel": 3,
+      "services": [
+        {
+          "sid": 1,
+          "name": "GNNHD"
+        }
+      ]
+    },
+    "192.168.3.45|M1C4": {
+      "host": "192.168.3.45",
+      "module": 1,
+      "channel": 4,
+      "services": [
+        {
+          "sid": 1,
+          "name": "EXPRESS NEWS"
+        },
+        {
+          "sid": 2,
+          "name": "EXPRESS ENTERTAINMENT"
+        },
+        {
+          "sid": 3,
+          "name": "CHAUPAAL"
+        },
+        {
+          "sid": 4,
+          "name": "EXPRESS 24/7"
+        }
+      ]
+    },
+    "192.168.3.45|M1C5": {
+      "host": "192.168.3.45",
+      "module": 1,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 1,
+          "name": "PTV-Home"
+        },
+        {
+          "sid": 2,
+          "name": "PTV-NEWS HD"
+        },
+        {
+          "sid": 3,
+          "name": "PTV-Global"
+        },
+        {
+          "sid": 4,
+          "name": "PTV-SPORTS-HD"
+        },
+        {
+          "sid": 5,
+          "name": "PAKISTAN TV"
+        },
+        {
+          "sid": 6,
+          "name": "PTV-FEED"
+        },
+        {
+          "sid": 7,
+          "name": "Radio_Pakistan-1"
+        },
+        {
+          "sid": 8,
+          "name": "Radio_Sawat & Waziristan"
+        },
+        {
+          "sid": 9,
+          "name": "Radio_Pakistan-2"
+        },
+        {
+          "sid": 10,
+          "name": "Radio_Apna & Nori"
+        }
+      ]
+    },
+    "192.168.3.45|M1C6": {
+      "host": "192.168.3.45",
+      "module": 1,
+      "channel": 6,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Dunya News HD"
+        },
+        {
+          "sid": 2,
+          "name": "Lahore News"
+        },
+        {
+          "sid": 4,
+          "name": "Dunya ENT"
+        }
+      ]
+    },
+    "192.168.3.45|M1C7": {
+      "host": "192.168.3.45",
+      "module": 1,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Neo News HD"
+        },
+        {
+          "sid": 2,
+          "name": "Lahore Rung HD"
+        }
+      ]
+    },
+    "192.168.3.45|M5C1": {
+      "host": "192.168.3.45",
+      "module": 5,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "A1 TV"
+        },
+        {
+          "sid": 2,
+          "name": "MINIMAX 2"
+        },
+        {
+          "sid": 8,
+          "name": "SUN TV"
+        },
+        {
+          "sid": 9,
+          "name": "APNA HD"
+        },
+        {
+          "sid": 10,
+          "name": "8XM HD"
+        },
+        {
+          "sid": 11,
+          "name": "ABBTAKK HD"
+        },
+        {
+          "sid": 12,
+          "name": "JALWA HD"
+        },
+        {
+          "sid": 13,
+          "name": "K21 NEWS HD"
+        },
+        {
+          "sid": 22,
+          "name": "DM News English"
+        },
+        {
+          "sid": 25,
+          "name": "FASTSPORTS HD"
+        }
+      ]
+    },
+    "192.168.3.45|M5C3": {
+      "host": "192.168.3.45",
+      "module": 5,
+      "channel": 3,
+      "services": [
+        {
+          "sid": 1,
+          "name": "SUCH TV"
+        }
+      ]
+    },
+    "192.168.3.45|M5C5": {
+      "host": "192.168.3.45",
+      "module": 5,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 1,
+          "name": "A1 TV"
+        },
+        {
+          "sid": 2,
+          "name": "MINIMAX 2"
+        },
+        {
+          "sid": 8,
+          "name": "SUN TV"
+        },
+        {
+          "sid": 9,
+          "name": "APNA HD"
+        },
+        {
+          "sid": 10,
+          "name": "8XM HD"
+        },
+        {
+          "sid": 11,
+          "name": "ABBTAKK HD"
+        },
+        {
+          "sid": 12,
+          "name": "JALWA HD"
+        },
+        {
+          "sid": 13,
+          "name": "K21 NEWS HD"
+        },
+        {
+          "sid": 14,
+          "name": "Ocean News TV"
+        },
+        {
+          "sid": 15,
+          "name": "NTN NEWS"
+        },
+        {
+          "sid": 16,
+          "name": "WILAYAT TV"
+        },
+        {
+          "sid": 17,
+          "name": "Al Zahra"
+        },
+        {
+          "sid": 18,
+          "name": "MUNTAZIR TV"
+        },
+        {
+          "sid": 19,
+          "name": "Filmasia"
+        },
+        {
+          "sid": 20,
+          "name": "Music Masti"
+        },
+        {
+          "sid": 21,
+          "name": "JAN TV"
+        },
+        {
+          "sid": 22,
+          "name": "DM News English"
+        },
+        {
+          "sid": 23,
+          "name": "Love TV"
+        },
+        {
+          "sid": 24,
+          "name": "Prime Asia Tv"
+        },
+        {
+          "sid": 25,
+          "name": "Btv mehak Malik dance"
+        },
+        {
+          "sid": 26,
+          "name": "FASTSPORTS HD"
+        },
+        {
+          "sid": 27,
+          "name": "Bethat TV"
+        },
+        {
+          "sid": 28,
+          "name": "Hidayat TV"
+        },
+        {
+          "sid": 29,
+          "name": "JEET SPORTS"
+        },
+        {
+          "sid": 30,
+          "name": "Al Ehsaan TV"
+        },
+        {
+          "sid": 31,
+          "name": "PK SPORTS"
+        },
+        {
+          "sid": 32,
+          "name": "Dhanak TV USA"
+        }
+      ]
+    },
+    "192.168.3.45|M5C6": {
+      "host": "192.168.3.45",
+      "module": 5,
+      "channel": 6,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Mashriq TV"
+        }
+      ]
+    },
+    "192.168.3.8|M1C10": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 10,
+      "services": [
+        {
+          "sid": 1050,
+          "name": "Geo News"
+        },
+        {
+          "sid": 1060,
+          "name": "Geo Entertainment"
+        },
+        {
+          "sid": 1070,
+          "name": "Geo Kahani"
+        },
+        {
+          "sid": 1080,
+          "name": "Geo Super"
+        },
+        {
+          "sid": 1090,
+          "name": "Geo Tez"
+        },
+        {
+          "sid": 1100,
+          "name": "Geo ME"
+        }
+      ]
+    },
+    "192.168.3.8|M1C11": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 11,
+      "services": [
+        {
+          "sid": 1,
+          "name": "RT English"
+        }
+      ]
+    },
+    "192.168.3.8|M1C12": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 12,
+      "services": [
+        {
+          "sid": 1001,
+          "name": "VTV1"
+        },
+        {
+          "sid": 1002,
+          "name": "VTV2"
+        }
+      ]
+    },
+    "192.168.3.8|M1C15": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 15,
+      "services": [
+        {
+          "sid": 4,
+          "name": "WAQT NEWS HD"
+        }
+      ]
+    },
+    "192.168.3.8|M1C16": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 16,
+      "services": [
+        {
+          "sid": 1,
+          "name": "MUN TV"
+        },
+        {
+          "sid": 2,
+          "name": "TIME NEWS HD"
+        }
+      ]
+    },
+    "192.168.3.8|M1C2": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 2,
+      "services": [
+        {
+          "sid": 1,
+          "name": "SUNO NEWS-HD"
+        }
+      ]
+    },
+    "192.168.3.8|M1C3": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 3,
+      "services": [
+        {
+          "sid": 1,
+          "name": "24 News HD"
+        },
+        {
+          "sid": 2,
+          "name": "CITY-42 HD"
+        },
+        {
+          "sid": 3,
+          "name": "CITY-41"
+        },
+        {
+          "sid": 4,
+          "name": "ROHI TV"
+        },
+        {
+          "sid": 5,
+          "name": "UK-44"
+        },
+        {
+          "sid": 6,
+          "name": "CITY-21"
+        },
+        {
+          "sid": 7,
+          "name": "CITY"
+        },
+        {
+          "sid": 8,
+          "name": "CITY"
+        }
+      ]
+    },
+    "192.168.3.8|M1C4": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 4,
+      "services": [
+        {
+          "sid": 257,
+          "name": "KTN-EN"
+        },
+        {
+          "sid": 258,
+          "name": "KASHIS"
+        },
+        {
+          "sid": 513,
+          "name": "KTNNEW"
+        }
+      ]
+    },
+    "192.168.3.8|M1C7": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 1,
+          "name": "SAMAA"
+        }
+      ]
+    },
+    "192.168.3.8|M1C8": {
+      "host": "192.168.3.8",
+      "module": 1,
+      "channel": 8,
+      "services": [
+        {
+          "sid": 101,
+          "name": "HUM NEWS HD"
+        },
+        {
+          "sid": 102,
+          "name": "MASALA TV"
+        },
+        {
+          "sid": 103,
+          "name": "HUM SITARAY"
+        },
+        {
+          "sid": 104,
+          "name": "HUM MENA"
+        },
+        {
+          "sid": 105,
+          "name": "HUM HD"
+        }
+      ]
+    },
+    "192.168.3.8|M5C1": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Public News"
+        }
+      ]
+    },
+    "192.168.3.8|M5C2": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 2,
+      "services": [
+        {
+          "sid": 1,
+          "name": "AIK NEWS"
+        }
+      ]
+    },
+    "192.168.3.8|M5C5": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 1,
+          "name": "ABN News - HD"
+        }
+      ]
+    },
+    "192.168.3.8|M5C7": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 257,
+          "name": "AGN NEWSE"
+        }
+      ]
+    },
+    "192.168.3.8|M5C8": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 8,
+      "services": [
+        {
+          "sid": 1,
+          "name": "92 News HD"
+        },
+        {
+          "sid": 2,
+          "name": "TEST FEED"
+        }
+      ]
+    },
+    "192.168.3.8|M5C9": {
+      "host": "192.168.3.8",
+      "module": 5,
+      "channel": 9,
+      "services": [
+        {
+          "sid": 5,
+          "name": "Kohenoor TV"
+        },
+        {
+          "sid": 15,
+          "name": "Pashto 1"
+        },
+        {
+          "sid": 20,
+          "name": "Sindh TV"
+        },
+        {
+          "sid": 25,
+          "name": "Sindh News"
+        },
+        {
+          "sid": 30,
+          "name": "VSH"
+        },
+        {
+          "sid": 35,
+          "name": "Hoora TV"
+        },
+        {
+          "sid": 40,
+          "name": "Pakistan 1"
+        },
+        {
+          "sid": 50,
+          "name": "Star News Asia"
+        },
+        {
+          "sid": 65,
+          "name": "NOOR TV PK"
+        },
+        {
+          "sid": 70,
+          "name": "Al Ehsaan Tv"
+        },
+        {
+          "sid": 75,
+          "name": "Paigham Pashto"
+        },
+        {
+          "sid": 80,
+          "name": "iFilm English"
+        }
+      ]
+    },
+    "192.168.3.9|M1C1": {
+      "host": "192.168.3.9",
+      "module": 1,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "TV ONE"
+        },
+        {
+          "sid": 2,
+          "name": "NEWS ONE"
+        },
+        {
+          "sid": 3,
+          "name": "WASEB"
+        }
+      ]
+    },
+    "192.168.3.9|M1C2": {
+      "host": "192.168.3.9",
+      "module": 1,
+      "channel": 2,
+      "services": [
+        {
+          "sid": 1,
+          "name": "ARYZindagi"
+        },
+        {
+          "sid": 3,
+          "name": "ARYDigitalUK"
+        },
+        {
+          "sid": 4,
+          "name": "ARYDigitalAsia HD"
+        },
+        {
+          "sid": 5,
+          "name": "FEED QTV"
+        },
+        {
+          "sid": 6,
+          "name": "ARY World"
+        },
+        {
+          "sid": 7,
+          "name": "ARYQTV"
+        },
+        {
+          "sid": 8,
+          "name": "ARYMusik"
+        },
+        {
+          "sid": 9,
+          "name": "ARYDigitalME"
+        },
+        {
+          "sid": 10,
+          "name": "ARYNewsUSA"
+        },
+        {
+          "sid": 11,
+          "name": "ARYNewsAsia"
+        },
+        {
+          "sid": 12,
+          "name": "A SportsHD"
+        },
+        {
+          "sid": 13,
+          "name": "ARYDigitalUSA"
+        }
+      ]
+    },
+    "192.168.3.9|M1C5": {
+      "host": "192.168.3.9",
+      "module": 1,
+      "channel": 5,
+      "services": [
+        {
+          "sid": 8,
+          "name": "Arsh TV"
+        },
+        {
+          "sid": 10,
+          "name": "Planet Fun"
+        },
+        {
+          "sid": 30,
+          "name": "GOD STANDS TV"
+        }
+      ]
+    },
+    "192.168.3.9|M1C7": {
+      "host": "192.168.3.9",
+      "module": 1,
+      "channel": 7,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Discover Pakistan"
+        },
+        {
+          "sid": 15,
+          "name": "Special TV"
+        },
+        {
+          "sid": 20,
+          "name": "See TV"
+        },
+        {
+          "sid": 25,
+          "name": "Sab Tv"
+        },
+        {
+          "sid": 33,
+          "name": "Venus HD"
+        },
+        {
+          "sid": 40,
+          "name": "APlus Pakistan"
+        },
+        {
+          "sid": 45,
+          "name": "Channel5"
+        },
+        {
+          "sid": 50,
+          "name": "Play TV"
+        },
+        {
+          "sid": 55,
+          "name": "TV2DAY"
+        },
+        {
+          "sid": 65,
+          "name": "Global 1"
+        },
+        {
+          "sid": 90,
+          "name": "AUR News"
+        },
+        {
+          "sid": 95,
+          "name": "SNN News"
+        }
+      ]
+    },
+    "192.168.3.9|M5C1": {
+      "host": "192.168.3.9",
+      "module": 5,
+      "channel": 1,
+      "services": [
+        {
+          "sid": 1,
+          "name": "Dawn News TV"
+        }
+      ]
+    },
+    "192.168.3.9|M5C6": {
+      "host": "192.168.3.9",
+      "module": 5,
+      "channel": 6,
+      "services": [
+        {
+          "sid": 5,
+          "name": "LTN FAMILY"
+        },
+        {
+          "sid": 10,
+          "name": "FILMAZIA"
+        },
+        {
+          "sid": 15,
+          "name": "ARUJ TV"
+        },
+        {
+          "sid": 20,
+          "name": "FILMAZIA PUNJABI"
+        },
+        {
+          "sid": 30,
+          "name": "FILMAX"
+        },
+        {
+          "sid": 35,
+          "name": "HADI TV"
+        },
+        {
+          "sid": 40,
+          "name": "Afghan TV"
+        },
+        {
+          "sid": 50,
+          "name": "DM News English"
+        }
+      ]
+    },
+    "192.168.3.9|M5C8": {
+      "host": "192.168.3.9",
+      "module": 5,
+      "channel": 8,
+      "services": [
+        {
+          "sid": 1,
+          "name": "MEHRAN_TV"
+        }
+      ]
+    }
+  }
+}

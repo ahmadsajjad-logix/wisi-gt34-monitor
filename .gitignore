@@ -32,3 +32,9 @@ authoritative_inventory_v6/*.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Runtime SQLite databases and journals
+database/*.sqlite
+database/*.sqlite3
+database/*.sqlite-*
+database/*.sqlite3-*

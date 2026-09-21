@@ -1,27 +1,2 @@
-# WISI GT34 Monitor - Production Python Requirements
-#
-# Validated working production environment captured during migration:
-#   Python 3.14.6 on Windows
-#
-# The production monitoring runtime in this repository has no mandatory
-# third-party pip dependencies. Its core functionality uses the Python
-# standard library, including:
-#
-# - HTTP/XML: urllib, http, xml
-# - SNMPv2c: internal gt34_monitor.snmp implementation
-# - SQLite: sqlite3
-# - SMTP/email/TLS: smtplib, email, ssl
-# - Configuration: tomllib
-# - JSON/CSV/logging/concurrency: standard-library modules
-#
-# IMPORTANT:
-# gt34_monitor is a required PROJECT PACKAGE included in this repository.
-# It is source code, not a package to install from PyPI.
-#
-# The complete pip environment captured from the working PC is preserved in:
-#   requirements-working-pc-freeze.txt
-# That snapshot contains packages used by other tools/projects on the same PC
-# and must NOT be treated as the production dependency list for this monitor.
-#
-# For a clean production server, no `pip install` packages are currently
-# required by the core runtime represented by this repository.
+# No third-party packages required.
+# Python 3.11+ standard library only (tested target: Python 3.13 on Windows 11).

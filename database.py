@@ -172,6 +172,12 @@ def create_schema(conn):
 
             lock_state INTEGER,
 
+            enabled INTEGER,
+
+            state INTEGER,
+
+            disabled INTEGER,
+
             rf_level_dbm REAL,
 
             snr_db REAL,
@@ -512,6 +518,49 @@ def create_schema(conn):
 
 
         ------------------------------------------------------------
+        -- IMMUTABLE SERVICE OBSERVATION SAMPLES
+        --
+        -- One row per service observed in a specific tuner sample.
+        -- Used by the alert policy to evaluate service presence against
+        -- the same acquisition generation rather than mutable catalog state.
+        ------------------------------------------------------------
+
+        CREATE TABLE IF NOT EXISTS service_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            tuner_id INTEGER NOT NULL,
+
+            sampled_at TEXT NOT NULL,
+
+            service_id INTEGER NOT NULL,
+
+            service_name TEXT,
+
+            provider_name TEXT,
+
+            pmt_pid INTEGER,
+
+            pcr_pid INTEGER,
+
+            running_status INTEGER,
+
+            elementary_stream_count INTEGER,
+
+            UNIQUE (
+                tuner_id,
+                sampled_at,
+                service_id
+            ),
+
+            FOREIGN KEY (
+                tuner_id
+            )
+            REFERENCES tuners(id)
+            ON DELETE CASCADE
+        );
+
+
+        ------------------------------------------------------------
         -- SERVICE ELEMENTARY STREAMS
         ------------------------------------------------------------
 
@@ -645,6 +694,13 @@ def create_schema(conn):
         CREATE INDEX IF NOT EXISTS
         idx_ts_samples_time
         ON ts_samples(
+            tuner_id,
+            sampled_at
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_service_samples_tuner_time
+        ON service_samples(
             tuner_id,
             sampled_at
         );
@@ -890,6 +946,7 @@ def show_database_summary(conn):
         "pcr_pid_samples",
         "transport_streams",
         "services",
+        "service_samples",
         "service_streams",
         "counter_state",
         "monitoring_events",

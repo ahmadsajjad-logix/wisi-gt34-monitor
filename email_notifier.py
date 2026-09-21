@@ -1,32 +1,34 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import os
 import smtplib
+import os
 import sqlite3
 import ssl
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config import DATABASE_PATH
 
 
-SMTP_HOST = os.getenv("WISI_SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("WISI_SMTP_PORT", "587"))
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
 SMTP_USERNAME = os.getenv("WISI_SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("WISI_SMTP_PASSWORD", "")
 
-EMAIL_FROM = os.getenv("WISI_EMAIL_FROM", SMTP_USERNAME)
-EMAIL_TO = os.getenv("WISI_EMAIL_TO", "")
+EMAIL_FROM = "pemraprtg@gmail.com"
+EMAIL_TO = "pemraalerts@gmail.com"
 EMAIL_SUBJECT = "Transmission Alert"
 
 SATELLITE_NAME = "Paksat MM1"
 FREQUENCY_BAND = "C-band"
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Karachi")
+#PEMRA_LOGO_PATH = Path(__file__).resolve().parent / "pemra_logo.png"
 
 
 @dataclass(frozen=True)
@@ -182,12 +184,6 @@ def build_message(
 
 
 def send_message(message: EmailMessage) -> None:
-    if not SMTP_USERNAME or not SMTP_PASSWORD or not EMAIL_TO:
-        raise RuntimeError(
-            "SMTP configuration is incomplete. Set WISI_SMTP_USERNAME, "
-            "WISI_SMTP_PASSWORD and WISI_EMAIL_TO in the environment."
-        )
-
     context = ssl.create_default_context()
 
     with smtplib.SMTP(
@@ -382,10 +378,85 @@ def pending_channel_transition_groups(
     return groups
 
 
-def build_channel_transition_message(rows: list[sqlite3.Row]) -> EmailMessage:
+def _parse_iso_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _format_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def transition_downtime_seconds(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> int | None:
+    """Return outage duration for a recovery transition, if known.
+
+    The duration is derived from the most recent preceding DOWN/MISSING
+    transition for the same persistent service (and audio PID, when relevant).
+    """
+    trigger = str(row["trigger_type"])
+    new_state = str(row["new_state"])
+    event_id = int(row["id"])
+    occurred_at = str(row["occurred_at"])
+
+    if trigger == "service_availability" and new_state == "UP":
+        previous = conn.execute(
+            """
+            SELECT occurred_at
+            FROM channel_transition_events
+            WHERE service_db_id = ?
+              AND trigger_type = 'service_availability'
+              AND new_state = 'DOWN'
+              AND id < ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(row["service_db_id"]), event_id),
+        ).fetchone()
+    elif trigger == "audio_track" and new_state == "PRESENT":
+        previous = conn.execute(
+            """
+            SELECT occurred_at
+            FROM channel_transition_events
+            WHERE service_db_id = ?
+              AND trigger_type = 'audio_track'
+              AND audio_pid IS ?
+              AND new_state = 'MISSING'
+              AND id < ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(row["service_db_id"]), row["audio_pid"], event_id),
+        ).fetchone()
+    else:
+        return None
+
+    if previous is None:
+        return None
+
+    try:
+        start = _parse_iso_timestamp(str(previous["occurred_at"]))
+        end = _parse_iso_timestamp(occurred_at)
+        return max(0, int((end - start).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_channel_transition_message(
+    rows: list[sqlite3.Row],
+    conn: sqlite3.Connection | None = None,
+) -> EmailMessage:
     first = rows[0]
     trigger = str(first["trigger_type"])
     occurred_at = str(first["occurred_at"])
+    downtime_line = ""
 
     if trigger == "service_availability":
         new_state = str(first["new_state"])
@@ -403,20 +474,38 @@ def build_channel_transition_message(rows: list[sqlite3.Row]) -> EmailMessage:
         if len(names) == 1:
             channel_name = names[0]
         else:
-            symbol = "❌" if new_state == "DOWN" else "✅"
+            symbol = "âŒ" if new_state == "DOWN" else "âœ…"
             channel_name = "\n" + "\n".join(
-                f"{symbol} {name} — {new_state}" for name in names
+                f"{symbol} {name} â€” {new_state}" for name in names
             )
 
         if new_state == "DOWN":
             if reason == "carrier_unlocked":
-                status = "❌ DOWN (Carrier UNLOCKED)"
+                status = "âŒ DOWN (Carrier UNLOCKED)"
             elif reason == "transport_stream_down":
-                status = "❌ DOWN (Carrier LOCKED, Transport Stream DOWN)"
+                status = "âŒ DOWN (Carrier LOCKED, Transport Stream DOWN)"
             else:
-                status = "❌ DOWN"
+                status = "âŒ DOWN"
         else:
-            status = "✅ UP"
+            status = "âœ… UP"
+            if conn is not None:
+                durations = [
+                    value
+                    for value in (transition_downtime_seconds(conn, row) for row in rows)
+                    if value is not None
+                ]
+                if durations:
+                    unique_durations = sorted(set(durations))
+                    if len(unique_durations) == 1:
+                        downtime_line = (
+                            f"Total downtime: {_format_duration(unique_durations[0])}\n"
+                        )
+                    else:
+                        downtime_line = (
+                            "Total downtime: varies by channel "
+                            f"({_format_duration(min(durations))} to "
+                            f"{_format_duration(max(durations))})\n"
+                        )
     else:
         row = first
         channel_name = str(row["service_name"])
@@ -427,23 +516,75 @@ def build_channel_transition_message(rows: list[sqlite3.Row]) -> EmailMessage:
         if language:
             detail += f", {language}"
         if new_state == "MISSING":
-            status = f"⚠️ AUDIO TRACK MISSING ({detail})"
+            status = f"âš ï¸ AUDIO TRACK MISSING ({detail})"
         else:
-            status = f"✅ AUDIO TRACK RESTORED ({detail})"
+            status = f"âœ… AUDIO TRACK RESTORED ({detail})"
+            if conn is not None:
+                duration = transition_downtime_seconds(conn, row)
+                if duration is not None:
+                    downtime_line = f"Total downtime: {_format_duration(duration)}\n"
 
     body = (
         f"Date/time stamp: {local_timestamp(occurred_at)}\n"
         f"Channel name: {channel_name}\n"
         f"Satellite name: {SATELLITE_NAME}\n"
         f"Frequency band: {FREQUENCY_BAND}\n"
-        f"Channel status: {status}\n\n"
+        f"Channel status: {status}\n"
+        f"{downtime_line}"
+        "\n"
         "Automated transmission monitoring notification.\n"
     )
+
+    html_channel = escape(channel_name).replace("\n", "<br>")
+    html_status = escape(status)
+    html_downtime = ""
+    if downtime_line:
+        label, value = downtime_line.rstrip("\n").split(":", 1)
+        html_downtime = f"<div><strong>{escape(label)}:</strong>{escape(value)}</div>"
+
+    logo_html = ""
+    if PEMRA_LOGO_PATH.is_file():
+        logo_html = (
+            '<img src="cid:pemra-logo" alt="PEMRA" '
+            'style="width:16px;height:16px;vertical-align:middle;margin-right:5px;">'
+        )
+
+    html_body = f"""\
+<html>
+  <body>
+    <div><strong>Date/time stamp:</strong> {escape(local_timestamp(occurred_at))}</div>
+    <div><strong>Channel name:</strong> {html_channel}</div>
+    <div><strong>Satellite name:</strong> {escape(SATELLITE_NAME)}</div>
+    <div><strong>Frequency band:</strong> {escape(FREQUENCY_BAND)}</div>
+    <div><strong>Channel status:</strong> {html_status}</div>
+    {html_downtime}
+    <br>
+    <div style="font-size:12px;font-style:italic;">
+      {logo_html}Automated transmission monitoring notification.
+    </div>
+  </body>
+</html>
+"""
+
     message = EmailMessage()
     message["Subject"] = EMAIL_SUBJECT
     message["From"] = EMAIL_FROM
     message["To"] = EMAIL_TO
     message.set_content(body)
+    message.add_alternative(html_body, subtype="html")
+
+    if PEMRA_LOGO_PATH.is_file():
+        html_part = message.get_body(preferencelist=("html",))
+        if html_part is not None:
+            html_part.add_related(
+                PEMRA_LOGO_PATH.read_bytes(),
+                maintype="image",
+                subtype="png",
+                cid="<pemra-logo>",
+                filename=PEMRA_LOGO_PATH.name,
+                disposition="inline",
+            )
+
     return message
 
 
@@ -467,7 +608,7 @@ def send_channel_transition_notifications(
         groups = pending_channel_transition_groups(conn)
         candidates = len(groups)
         for rows in groups:
-            message = build_channel_transition_message(rows)
+            message = build_channel_transition_message(rows, conn=conn)
             send_message(message)
             sent_at = datetime.now(LOCAL_TIMEZONE).isoformat(timespec="seconds")
             ids = [int(row["id"]) for row in rows]
@@ -484,3 +625,4 @@ def send_channel_transition_notifications(
         sent=sent,
         skipped_already_sent=skipped,
     )
+

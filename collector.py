@@ -1,20 +1,54 @@
 from __future__ import annotations
 
+import argparse
+import logging
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config import DATABASE_PATH, WISI_HOST, WISI_MODULES
+from config import DATABASE_PATH, WISI_CHASSIS
 from parsers import (
     parse_pidmapper,
     parse_pcr_inputs,
     parse_ts_flux,
     parse_tsdb_input,
     parse_tuner_flux,
+    parse_tuner_config,
 )
 from wisi_client import WisiClient
+
+
+CONTINUOUS_INTERVAL_SECONDS = 5.0
+LOG_DIR = Path("logs")
+CONTINUOUS_LOG_PATH = LOG_DIR / "collector_continuous.log"
+
+DYNAMIC_MAPPING_EVIDENCE_PATH = LOG_DIR / "dynamic_mapping_evidence.jsonl"
+DYNAMIC_MAPPING_RESOURCE = "tsio/inputs_conf.xmlc"
+TUNER_CONFIG_RESOURCE = "tuner.xmlc"
+
+
+def configure_continuous_logging() -> logging.Logger:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("wisi_collector")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    if not logger.handlers:
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(message)s"
+        )
+        file_handler = logging.FileHandler(
+            CONTINUOUS_LOG_PATH,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    return logger
 
 
 EXPECTED_TABLES = {
@@ -30,6 +64,7 @@ EXPECTED_TABLES = {
     "transport_streams",
     "services",
     "service_streams",
+    "service_samples",
     "counter_state",
     "monitoring_events",
     "poll_runs",
@@ -70,6 +105,58 @@ def open_db(path: Path | str = DATABASE_PATH) -> sqlite3.Connection:
     return conn
 
 
+def ensure_dynamic_mapping_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS input_tuner_mapping_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            module_id INTEGER NOT NULL,
+            sampled_at TEXT NOT NULL,
+            configured_input_id INTEGER NOT NULL,
+            configured_name TEXT,
+            configured_uuid TEXT,
+            input_enabled INTEGER,
+            error_status TEXT,
+            tuner_object_id INTEGER,
+            hwid INTEGER,
+            physical_port INTEGER,
+            mapping_status TEXT NOT NULL,
+            UNIQUE(module_id, sampled_at, configured_input_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_input_tuner_mapping_lookup
+        ON input_tuner_mapping_samples(module_id, configured_input_id, sampled_at);
+
+        CREATE TABLE IF NOT EXISTS tuner_config_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            module_id INTEGER NOT NULL,
+            sampled_at TEXT NOT NULL,
+            tuner_object_id INTEGER NOT NULL,
+            enabled INTEGER,
+            state INTEGER,
+            tuner_type INTEGER,
+            type_name TEXT,
+            frequency_raw INTEGER,
+            frequency_mhz REAL,
+            symbol_rate_raw INTEGER,
+            symbol_rate_mbd REAL,
+            polarisation_code INTEGER,
+            polarisation TEXT,
+            fec_config INTEGER,
+            modulation_config INTEGER,
+            is_id_config INTEGER,
+            lnb INTEGER,
+            lo_frequency_raw INTEGER,
+            voltage INTEGER,
+            tone INTEGER,
+            UNIQUE(module_id, sampled_at, tuner_object_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tuner_config_lookup
+        ON tuner_config_samples(module_id, tuner_object_id, sampled_at);
+        """
+    )
+    conn.commit()
+
+
 def verify_schema(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -84,10 +171,16 @@ def verify_schema(conn: sqlite3.Connection) -> None:
 
     required_columns = {
         "tuners": {"first_seen_at", "last_seen_at"},
+        "tuner_samples": {"enabled", "state", "disabled"},
         "pids": {"first_seen_at", "last_seen_at"},
         "transport_streams": {"first_seen_at", "last_seen_at"},
         "services": {"first_seen_at", "last_seen_at"},
         "service_streams": {"first_seen_at", "last_seen_at"},
+        "service_samples": {
+            "tuner_id", "sampled_at", "service_id", "service_name",
+            "provider_name", "pmt_pid", "pcr_pid", "running_status",
+            "elementary_stream_count",
+        },
         "pcr_input_samples": {
             "pcr_discontinuity_errors_total",
             "pcr_discontinuity_errors_delta",
@@ -115,81 +208,121 @@ def verify_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def ensure_equipment(conn: sqlite3.Connection, sampled_at: str) -> dict[int, int]:
-    conn.execute(
-        """
-        INSERT INTO chassis(host, name, created_at, last_seen_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(host) DO UPDATE SET
-            last_seen_at = excluded.last_seen_at
-        """,
-        (WISI_HOST, "WISI-IRD-01", sampled_at, sampled_at),
-    )
-
-    chassis_id = conn.execute(
-        "SELECT id FROM chassis WHERE host = ?",
-        (WISI_HOST,),
-    ).fetchone()[0]
-
-    module_ids: dict[int, int] = {}
-
-    for module_number, cfg in WISI_MODULES.items():
+def ensure_equipment(conn: sqlite3.Connection, sampled_at: str) -> dict[tuple[str, int], int]:
+    module_ids: dict[tuple[str, int], int] = {}
+    for host, chassis_cfg in WISI_CHASSIS.items():
         conn.execute(
-            """
-            INSERT INTO modules(
-                chassis_id, module_number, module_name,
-                remote_identifier, remote_ip,
-                created_at, last_seen_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(chassis_id, module_number) DO UPDATE SET
-                module_name = excluded.module_name,
-                remote_identifier = excluded.remote_identifier,
-                remote_ip = excluded.remote_ip,
-                last_seen_at = excluded.last_seen_at
-            """,
-            (
-                chassis_id,
-                module_number,
-                cfg["name"],
-                cfg["remote"],
-                cfg["remote_ip"],
-                sampled_at,
-                sampled_at,
-            ),
+            """INSERT INTO chassis(host, name, created_at, last_seen_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(host) DO UPDATE SET
+                   name = excluded.name, last_seen_at = excluded.last_seen_at""",
+            (host, chassis_cfg["name"], sampled_at, sampled_at),
         )
-
-        module_id = conn.execute(
-            """
-            SELECT id FROM modules
-            WHERE chassis_id = ? AND module_number = ?
-            """,
-            (chassis_id, module_number),
-        ).fetchone()[0]
-        module_ids[module_number] = module_id
-
-        for input_id in range(8):
+        chassis_id = int(conn.execute(
+            "SELECT id FROM chassis WHERE host = ?", (host,)
+        ).fetchone()[0])
+        for module_number, cfg in chassis_cfg["modules"].items():
             conn.execute(
-                """
-                INSERT INTO tuners(
-                    module_id, input_id, hwid, display_number,
-                    configured_name, first_seen_at, last_seen_at
-                )
-                VALUES (?, ?, NULL, ?, NULL, ?, ?)
-                ON CONFLICT(module_id, input_id) DO UPDATE SET
-                    display_number = excluded.display_number,
-                    last_seen_at = excluded.last_seen_at
-                """,
-                (
-                    module_id,
-                    input_id,
-                    input_id + 1,
-                    sampled_at,
-                    sampled_at,
-                ),
+                """INSERT INTO modules(
+                       chassis_id, module_number, module_name, remote_identifier,
+                       remote_ip, created_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(chassis_id, module_number) DO UPDATE SET
+                       module_name = excluded.module_name,
+                       remote_identifier = excluded.remote_identifier,
+                       remote_ip = excluded.remote_ip,
+                       last_seen_at = excluded.last_seen_at""",
+                (chassis_id, module_number, cfg["name"], cfg["remote"],
+                 cfg["remote_ip"], sampled_at, sampled_at),
             )
-
+            module_id = int(conn.execute(
+                "SELECT id FROM modules WHERE chassis_id=? AND module_number=?",
+                (chassis_id,module_number),
+            ).fetchone()[0])
+            module_ids[(host,module_number)] = module_id
     return module_ids
+
+
+def _xml_text(element: ET.Element | None, path: str) -> str | None:
+    if element is None:
+        return None
+    child = element.find(path)
+    if child is None or child.text is None:
+        return None
+    value = child.text.strip()
+    return value or None
+
+
+def _xml_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_dynamic_input_relationships(xml_text: str) -> dict[int, dict[str, Any]]:
+    """Parse WISI TS-input -> tuner-object relationships from inputs_conf.xmlc.
+
+    This is evidence only. It does not change the existing production storage
+    identity or alarm-policy path.
+    """
+    root = ET.fromstring(xml_text)
+    relationships: dict[int, dict[str, Any]] = {}
+
+    for element in root.iter("input"):
+        input_id = _xml_int(element.get("id"))
+        if input_id is None:
+            continue
+
+        typespec = element.find("typespec")
+        relationships[input_id] = {
+            "input_id": input_id,
+            "configured_name": _xml_text(element, "name"),
+            "uuid": _xml_text(element, "uuid"),
+            "input_enabled": _xml_int(element.get("enabled")),
+            "error_status": _xml_text(element, "error_status"),
+            "tuner_object_id": (
+                _xml_int(typespec.get("id")) if typespec is not None else None
+            ),
+            "hwid": _xml_int(_xml_text(typespec, "hwid")),
+            "physical_port": _xml_int(_xml_text(typespec, "physical_port")),
+        }
+
+    return relationships
+
+
+def append_dynamic_mapping_evidence(records: list[dict[str, Any]]) -> None:
+    """Append non-alarming relationship evidence to a JSONL sidecar log."""
+    if not records:
+        return
+
+    import json
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with DYNAMIC_MAPPING_EVIDENCE_PATH.open("a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
+
+
+def ensure_tuner(
+    conn: sqlite3.Connection,
+    module_id: int,
+    input_id: int,
+    sampled_at: str,
+) -> int:
+    """Register/update one tuner that is actually present in the WISI response."""
+    conn.execute(
+        """INSERT INTO tuners(
+               module_id,input_id,hwid,display_number,configured_name,
+               first_seen_at,last_seen_at)
+           VALUES (?, ?, NULL, ?, NULL, ?, ?)
+           ON CONFLICT(module_id,input_id) DO UPDATE SET
+               display_number=excluded.display_number,
+               last_seen_at=excluded.last_seen_at""",
+        (module_id, input_id, input_id + 1, sampled_at, sampled_at),
+    )
+    return get_tuner_id(conn, module_id, input_id)
 
 
 def get_tuner_id(
@@ -381,7 +514,29 @@ def upsert_transport_and_services(
     service_count = 0
     stream_count = 0
 
-    for service_id, svc in tsdb_data.get("services", {}).items():
+    # Preserve authoritative service observations for this acquisition cycle.
+    # services remains the catalogue; service_samples is per-cycle state.
+    observed_services = tsdb_data.get("services", {}) or {}
+
+    for service_id, svc in observed_services.items():
+        streams = svc.get("streams", []) or []
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO service_samples(
+                tuner_id, sampled_at, service_id, service_name, provider_name,
+                pmt_pid, pcr_pid, running_status, elementary_stream_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tuner_id, sampled_at, int(service_id),
+                svc.get("service_name"), svc.get("provider_name"),
+                svc.get("pmt_pid"), svc.get("pcr_pid"),
+                svc.get("running_status"), len(streams),
+            ),
+        )
+
+    for service_id, svc in observed_services.items():
         service_count += 1
 
         conn.execute(
@@ -485,6 +640,7 @@ def store_module_snapshot(
     *,
     module_number: int,
     module_id: int,
+    chassis_host: str,
     module_cfg: dict[str, Any],
     snapshot: dict[str, dict[str, Any]],
     sampled_at: str,
@@ -507,11 +663,14 @@ def store_module_snapshot(
     }
 
     remote_ip = module_cfg["remote_ip"]
+    counter_scope = f"{chassis_host}|{remote_ip}"
 
-    for input_id in range(8):
-        tuner_id = get_tuner_id(conn, module_id, input_id)
+    # Use the actual tuner/input IDs returned by WISI. Modules may expose
+    # different input counts (for example 8 or 16).
+    for input_id in sorted(parsed["tuner"]):
+        tuner_id = ensure_tuner(conn, module_id, input_id, sampled_at)
 
-        tuner_data = parsed["tuner"].get(input_id, {})
+        tuner_data = parsed["tuner"][input_id]
         ts_data = parsed["ts"].get(input_id, {})
         pid_input = parsed["pid"].get(input_id, {"pids": {}})
         pcr_data = parsed["pcr"].get(input_id, {})
@@ -532,16 +691,20 @@ def store_module_snapshot(
         conn.execute(
             """
             INSERT INTO tuner_samples(
-                tuner_id, sampled_at, lock_state, rf_level_dbm, snr_db,
+                tuner_id, sampled_at, lock_state, enabled, state, disabled,
+                rf_level_dbm, snr_db,
                 ber_text, ber_value, frequency_raw, frequency_offset_raw,
                 symbol_rate, modulation, fec, isi, raw_source
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tuner_id,
                 sampled_at,
                 tuner_data.get("lock_state"),
+                as_int_bool(tuner_data.get("enabled")),
+                tuner_data.get("state"),
+                as_int_bool(tuner_data.get("disabled")),
                 tuner_data.get("rf_level_dbm"),
                 tuner_data.get("snr_db"),
                 tuner_data.get("ber_text"),
@@ -569,7 +732,7 @@ def store_module_snapshot(
             current = pid_input.get(field_name)
             delta, reset = counter_delta(
                 conn,
-                f"{remote_ip}|{input_id}|{short_name}",
+                f"{counter_scope}|{input_id}|{short_name}",
                 current,
                 sampled_at,
             )
@@ -620,13 +783,13 @@ def store_module_snapshot(
 
             packet_delta, packet_reset = counter_delta(
                 conn,
-                f"{remote_ip}|{input_id}|pid|{pid}|packets",
+                f"{counter_scope}|{input_id}|pid|{pid}|packets",
                 pid_data.get("packet_count"),
                 sampled_at,
             )
             cc_delta, cc_reset = counter_delta(
                 conn,
-                f"{remote_ip}|{input_id}|pid|{pid}|cc",
+                f"{counter_scope}|{input_id}|pid|{pid}|cc",
                 pid_data.get("cc_error_events"),
                 sampled_at,
             )
@@ -687,7 +850,7 @@ def store_module_snapshot(
             current = pcr_stats.get(field)
             delta, reset = counter_delta(
                 conn,
-                f"{remote_ip}|{input_id}|pcr_input|{field}",
+                f"{counter_scope}|{input_id}|pcr_input|{field}",
                 current,
                 sampled_at,
             )
@@ -712,7 +875,7 @@ def store_module_snapshot(
             current = input_stats.get(field)
             delta, reset = counter_delta(
                 conn,
-                f"{remote_ip}|{input_id}|input_regulator|{field}",
+                f"{counter_scope}|{input_id}|input_regulator|{field}",
                 current,
                 sampled_at,
             )
@@ -818,7 +981,7 @@ def store_module_snapshot(
                 if active:
                     delta, reset = counter_delta(
                         conn,
-                        f"{remote_ip}|{input_id}|pcr_pid|{pid}|{field}",
+                        f"{counter_scope}|{input_id}|pcr_pid|{pid}|{field}",
                         current,
                         sampled_at,
                     )
@@ -889,138 +1052,373 @@ def store_module_snapshot(
     return counts
 
 
+def fetch_chassis_snapshots(
+    host: str,
+    chassis_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch both configured modules for one chassis using one WISI session.
+
+    This function performs network I/O only. It does not touch SQLite.
+    Modules remain sequential within a chassis; chassis are run in parallel.
+    """
+    chassis_started = time.perf_counter()
+    client = WisiClient(host=host)
+
+    if not client.establish_session():
+        return {
+            "host": host,
+            "ok": False,
+            "elapsed_seconds": round(time.perf_counter() - chassis_started, 3),
+            "error": f"Unable to establish WISI chassis web session: {host}",
+            "modules": {},
+        }
+
+    modules: dict[int, dict[str, Any]] = {}
+
+    for module_number, cfg in chassis_cfg["modules"].items():
+        t0 = time.perf_counter()
+        try:
+            snapshot = client.get_module_snapshot(cfg["remote"])
+
+            # Parallel/non-alarming identity evidence. Failure of either
+            # optional resource must not fail the existing production module poll.
+            try:
+                snapshot["dynamic_inputs_conf"] = client.get_resource(
+                    cfg["remote"], DYNAMIC_MAPPING_RESOURCE
+                )
+            except Exception as exc:
+                snapshot["dynamic_inputs_conf"] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+            try:
+                snapshot["tuner_config"] = client.get_resource(
+                    cfg["remote"], TUNER_CONFIG_RESOURCE
+                )
+            except Exception as exc:
+                snapshot["tuner_config"] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+            failed = [
+                name
+                for name, result in snapshot.items()
+                if name not in {"dynamic_inputs_conf", "tuner_config"}
+                and not result.get("ok")
+            ]
+            if failed:
+                details = "; ".join(
+                    f"{name}: {snapshot[name].get('error')}" for name in failed
+                )
+                raise RuntimeError("Resource retrieval failed: " + details)
+
+            modules[module_number] = {
+                "ok": True,
+                "elapsed_seconds": round(time.perf_counter() - t0, 3),
+                "snapshot": snapshot,
+            }
+        except Exception as exc:
+            modules[module_number] = {
+                "ok": False,
+                "elapsed_seconds": round(time.perf_counter() - t0, 3),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    return {
+        "host": host,
+        "ok": all(info.get("ok") for info in modules.values()),
+        "elapsed_seconds": round(time.perf_counter() - chassis_started, 3),
+        "modules": modules,
+    }
+
+
 def collect_once() -> dict[str, Any]:
+    """Run one controlled poll cycle.
+
+    Network acquisition is parallel by chassis. SQLite parsing/storage remains
+    single-threaded in the main thread. Each successful module is committed
+    independently so one failed module cannot discard valid observations from
+    other modules.
+    """
     started_perf = time.perf_counter()
     started_at = utc_now()
-    modules_attempted = len(WISI_MODULES)
+    modules_attempted = sum(len(c["modules"]) for c in WISI_CHASSIS.values())
     modules_succeeded = 0
     error_messages: list[str] = []
-    module_results: dict[int, dict[str, Any]] = {}
+    module_results: dict[str, dict[str, Any]] = {}
 
-    client = WisiClient()
+    # Phase 1: WISI network acquisition only, four chassis in parallel.
+    chassis_results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(WISI_CHASSIS))) as executor:
+        futures = {
+            executor.submit(fetch_chassis_snapshots, host, cfg): host
+            for host, cfg in WISI_CHASSIS.items()
+        }
 
+        for future in as_completed(futures):
+            host = futures[future]
+            try:
+                chassis_results[host] = future.result()
+            except Exception as exc:
+                chassis_results[host] = {
+                    "host": host,
+                    "ok": False,
+                    "elapsed_seconds": 0.0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "modules": {},
+                }
+
+    # Phase 2: one main-thread SQLite writer.
     with open_db() as conn:
+        ensure_dynamic_mapping_schema(conn)
         verify_schema(conn)
         module_ids = ensure_equipment(conn, started_at)
 
         poll_cursor = conn.execute(
-            """
-            INSERT INTO poll_runs(
-                started_at, completed_at, success, duration_seconds,
-                modules_attempted, modules_succeeded, error_message
-            )
-            VALUES (?, NULL, 0, NULL, ?, 0, NULL)
-            """,
+            """INSERT INTO poll_runs(
+                   started_at,completed_at,success,duration_seconds,
+                   modules_attempted,modules_succeeded,error_message)
+               VALUES (?,NULL,0,NULL,?,0,NULL)""",
             (started_at, modules_attempted),
         )
         poll_run_id = int(poll_cursor.lastrowid)
-
-        # Persist the audit row before starting the controlled collection
-        # transaction. Measurement/inventory/counter-state writes below are
-        # committed only if every configured module succeeds.
         conn.commit()
 
-        collection_ok = False
+        for host, chassis_cfg in WISI_CHASSIS.items():
+            chassis_result = chassis_results.get(host)
 
-        try:
-            if not client.establish_session():
-                raise RuntimeError("Unable to establish WISI chassis web session")
+            if not chassis_result:
+                msg = f"{host}: no chassis acquisition result returned"
+                error_messages.append(msg)
+                for module_number in chassis_cfg["modules"]:
+                    key = f"{host}/M{module_number}"
+                    module_results[key] = {
+                        "ok": False,
+                        "host": host,
+                        "module_number": module_number,
+                        "elapsed_seconds": 0.0,
+                        "error": msg,
+                    }
+                continue
 
-            # Begin one coherent collection transaction covering all modules.
-            conn.execute("BEGIN")
+            chassis_error = chassis_result.get("error")
+            if chassis_error:
+                error_messages.append(chassis_error)
 
-            for module_number, cfg in WISI_MODULES.items():
-                module_started = time.perf_counter()
+            for module_number, cfg in chassis_cfg["modules"].items():
+                key = f"{host}/M{module_number}"
+                acquired = chassis_result.get("modules", {}).get(module_number)
 
+                if not acquired:
+                    msg = (
+                        f"{host} Module {module_number}: "
+                        f"{chassis_error or 'no module acquisition result returned'}"
+                    )
+                    error_messages.append(msg)
+                    module_results[key] = {
+                        "ok": False,
+                        "host": host,
+                        "module_number": module_number,
+                        "elapsed_seconds": chassis_result.get("elapsed_seconds", 0.0),
+                        "error": msg,
+                    }
+                    continue
+
+                if not acquired.get("ok"):
+                    msg = (
+                        f"{host} Module {module_number}: "
+                        f"{acquired.get('error', 'acquisition failed')}"
+                    )
+                    error_messages.append(msg)
+                    module_results[key] = {
+                        "ok": False,
+                        "host": host,
+                        "module_number": module_number,
+                        "elapsed_seconds": acquired.get("elapsed_seconds", 0.0),
+                        "error": msg,
+                    }
+                    continue
+
+                savepoint = f"module_{host.replace('.', '_')}_{module_number}"
+                conn.execute(f"SAVEPOINT {savepoint}")
                 try:
-                    snapshot = client.get_module_snapshot(cfg["remote"])
-
-                    failed_resources = [
-                        name
-                        for name, result in snapshot.items()
-                        if not result.get("ok")
-                    ]
-                    if failed_resources:
-                        details = "; ".join(
-                            f"{name}: {snapshot[name].get('error')}"
-                            for name in failed_resources
-                        )
-                        raise RuntimeError(
-                            "Resource retrieval failed: " + details
-                        )
-
+                    module_sampled_at = utc_now()
+                    module_id = module_ids[(host, module_number)]
                     counts = store_module_snapshot(
                         conn,
                         module_number=module_number,
-                        module_id=module_ids[module_number],
+                        module_id=module_id,
+                        chassis_host=host,
                         module_cfg=cfg,
-                        snapshot=snapshot,
-                        sampled_at=utc_now(),
+                        snapshot=acquired["snapshot"],
+                        sampled_at=module_sampled_at,
                     )
+
+                    tuner_config_result = acquired["snapshot"].get("tuner_config", {})
+                    tuner_config_rows = 0
+                    tuner_config_error: str | None = None
+
+                    if tuner_config_result.get("ok"):
+                        configured_tuners = parse_tuner_config(
+                            tuner_config_result.get("text") or ""
+                        )
+                        for tuner_object_id in sorted(configured_tuners):
+                            config_row = configured_tuners[tuner_object_id]
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO tuner_config_samples(
+                                    module_id,sampled_at,tuner_object_id,
+                                    enabled,state,tuner_type,type_name,
+                                    frequency_raw,frequency_mhz,
+                                    symbol_rate_raw,symbol_rate_mbd,
+                                    polarisation_code,polarisation,
+                                    fec_config,modulation_config,is_id_config,
+                                    lnb,lo_frequency_raw,voltage,tone
+                                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                """,
+                                (
+                                    module_id, module_sampled_at, tuner_object_id,
+                                    as_int_bool(config_row.get("enabled")),
+                                    config_row.get("state"),
+                                    config_row.get("type"),
+                                    config_row.get("type_name"),
+                                    config_row.get("frequency_raw"),
+                                    config_row.get("frequency_mhz"),
+                                    config_row.get("symbol_rate_raw"),
+                                    config_row.get("symbol_rate_mbd"),
+                                    config_row.get("polarisation_code"),
+                                    config_row.get("polarisation"),
+                                    config_row.get("fec_config"),
+                                    config_row.get("modulation_config"),
+                                    config_row.get("is_id_config"),
+                                    config_row.get("lnb"),
+                                    config_row.get("lo_frequency_raw"),
+                                    config_row.get("voltage"),
+                                    config_row.get("tone"),
+                                ),
+                            )
+                            tuner_config_rows += 1
+                    else:
+                        tuner_config_error = (
+                            tuner_config_result.get("error") or "resource unavailable"
+                        )
+
+                    mapping_result = acquired["snapshot"].get("dynamic_inputs_conf", {})
+                    mapping_records: list[dict[str, Any]] = []
+                    mapping_error: str | None = None
+
+                    if mapping_result.get("ok"):
+                        relationships = parse_dynamic_input_relationships(
+                            mapping_result.get("text") or ""
+                        )
+                        tuner_flux = parse_tuner_flux(
+                            acquired["snapshot"]["tuner_flux"]["text"]
+                        )
+                        tsdb_inputs = parse_tsdb_input(
+                            acquired["snapshot"]["tsdb_input"]["text"]
+                        )
+                        evidence_at = utc_now()
+
+                        for configured_input_id in sorted(relationships):
+                            relation = relationships[configured_input_id]
+                            tuner_object_id = relation.get("tuner_object_id")
+                            tuner_present = (
+                                tuner_object_id is not None
+                                and tuner_object_id in tuner_flux
+                            )
+                            mapping_status = (
+                                "RESOLVED" if tuner_present else "UNRESOLVED"
+                            )
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO input_tuner_mapping_samples(
+                                    module_id,sampled_at,configured_input_id,
+                                    configured_name,configured_uuid,input_enabled,
+                                    error_status,tuner_object_id,hwid,physical_port,
+                                    mapping_status
+                                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                                """,
+                                (
+                                    module_id, module_sampled_at, configured_input_id,
+                                    relation.get("configured_name"),
+                                    relation.get("uuid"),
+                                    relation.get("input_enabled"),
+                                    relation.get("error_status"),
+                                    tuner_object_id,
+                                    relation.get("hwid"),
+                                    relation.get("physical_port"),
+                                    mapping_status,
+                                ),
+                            )
+                            mapping_records.append({
+                                "observed_at": evidence_at,
+                                "sampled_at": module_sampled_at,
+                                "host": host,
+                                "module": module_number,
+                                "remote_ip": cfg.get("remote_ip"),
+                                "source": DYNAMIC_MAPPING_RESOURCE,
+                                "mapping_status": mapping_status,
+                                "resolved_tuner_present": tuner_present,
+                                "configured_tsdb_present": configured_input_id in tsdb_inputs,
+                                **relation,
+                            })
+                        append_dynamic_mapping_evidence(mapping_records)
+                    else:
+                        mapping_error = (
+                            mapping_result.get("error") or "resource unavailable"
+                        )
+
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    conn.commit()
 
                     modules_succeeded += 1
-                    module_results[module_number] = {
+                    module_results[key] = {
                         "ok": True,
-                        "elapsed_seconds": round(
-                            time.perf_counter() - module_started, 3
+                        "host": host,
+                        "module_number": module_number,
+                        "elapsed_seconds": acquired.get("elapsed_seconds", 0.0),
+                        "committed": True,
+                        "dynamic_mapping_rows": len(mapping_records),
+                        "dynamic_mapping_resolved": sum(
+                            1 for r in mapping_records
+                            if r.get("mapping_status") == "RESOLVED"
                         ),
+                        "dynamic_mapping_unresolved": sum(
+                            1 for r in mapping_records
+                            if r.get("mapping_status") == "UNRESOLVED"
+                        ),
+                        "dynamic_mapping_error": mapping_error,
+                        "tuner_config_rows": tuner_config_rows,
+                        "tuner_config_error": tuner_config_error,
                         **counts,
                     }
-
                 except Exception as exc:
-                    message = (
-                        f"Module {module_number}: "
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    conn.commit()
+                    msg = (
+                        f"{host} Module {module_number}: "
                         f"{type(exc).__name__}: {exc}"
                     )
-                    error_messages.append(message)
-                    module_results[module_number] = {
+                    error_messages.append(msg)
+                    module_results[key] = {
                         "ok": False,
-                        "elapsed_seconds": round(
-                            time.perf_counter() - module_started, 3
-                        ),
-                        "error": message,
+                        "host": host,
+                        "module_number": module_number,
+                        "elapsed_seconds": acquired.get("elapsed_seconds", 0.0),
+                        "committed": False,
+                        "error": msg,
                     }
-                    raise
-
-            # Every configured module succeeded. Commit the entire collection
-            # transaction as one coherent database state.
-            conn.commit()
-            collection_ok = True
-
-        except Exception as exc:
-            if conn.in_transaction:
-                conn.rollback()
-
-            # Avoid duplicating a module-level error already recorded above.
-            if not error_messages:
-                message = f"Collector: {type(exc).__name__}: {exc}"
-                error_messages.append(message)
-
-            # Any successful module result in memory was rolled back together
-            # with the failed cycle. Mark that explicitly in the printed result.
-            if modules_succeeded:
-                for info in module_results.values():
-                    if info.get("ok"):
-                        info["committed"] = False
-
-            modules_succeeded = 0
 
         completed_at = utc_now()
         duration = round(time.perf_counter() - started_perf, 3)
-        success = collection_ok and modules_succeeded == modules_attempted
+        success = modules_succeeded == modules_attempted
 
-        # poll_runs is an audit record and must survive even when the coherent
-        # measurement transaction above rolls back.
         conn.execute(
-            """
-            UPDATE poll_runs
-            SET completed_at = ?,
-                success = ?,
-                duration_seconds = ?,
-                modules_succeeded = ?,
-                error_message = ?
-            WHERE id = ?
-            """,
+            """UPDATE poll_runs SET completed_at=?,success=?,duration_seconds=?,
+                   modules_succeeded=?,error_message=? WHERE id=?""",
             (
                 completed_at,
                 1 if success else 0,
@@ -1044,6 +1442,7 @@ def collect_once() -> dict[str, Any]:
         "errors": error_messages,
     }
 
+
 def print_result(result: dict[str, Any]) -> None:
     print("=" * 88)
     print("WISI GT34 CONTROLLED COLLECTION CYCLE")
@@ -1058,11 +1457,11 @@ def print_result(result: dict[str, Any]) -> None:
     )
     print(f"Overall success  : {result['success']}")
 
-    for module_number in sorted(result["modules"]):
-        info = result["modules"][module_number]
+    for module_key in sorted(result["modules"]):
+        info = result["modules"][module_key]
         print("-" * 88)
         print(
-            f"Module {module_number}: "
+            f"{module_key}: "
             f"{'OK' if info.get('ok') else 'FAILED'} "
             f"({info.get('elapsed_seconds')} s)"
         )
@@ -1086,5 +1485,88 @@ def print_result(result: dict[str, Any]) -> None:
     print("=" * 88)
 
 
+def run_continuous(interval_seconds: float = CONTINUOUS_INTERVAL_SECONDS) -> None:
+    """Run non-overlapping collection cycles on a monotonic start-to-start schedule."""
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be greater than zero")
+
+    logger = configure_continuous_logging()
+    logger.info(
+        "Continuous collector starting | interval=%.3f s | pid=%s",
+        interval_seconds,
+        __import__("os").getpid(),
+    )
+
+    cycle_number = 0
+    next_deadline = time.monotonic()
+
+    try:
+        while True:
+            cycle_number += 1
+            cycle_started = time.monotonic()
+
+            try:
+                result = collect_once()
+                level = logging.INFO if result["success"] else logging.WARNING
+                logger.log(
+                    level,
+                    "Cycle %d complete | poll_run_id=%s | success=%s | "
+                    "modules=%s/%s | duration=%.3f s | errors=%d",
+                    cycle_number,
+                    result["poll_run_id"],
+                    result["success"],
+                    result["modules_succeeded"],
+                    result["modules_attempted"],
+                    result["duration_seconds"],
+                    len(result["errors"]),
+                )
+            except Exception:
+                logger.exception(
+                    "Cycle %d failed with an unhandled exception",
+                    cycle_number,
+                )
+
+            next_deadline += interval_seconds
+            now = time.monotonic()
+            remaining = next_deadline - now
+
+            if remaining > 0:
+                time.sleep(remaining)
+            else:
+                overrun = -remaining
+                logger.warning(
+                    "Cycle %d schedule overrun | %.3f s late | "
+                    "cycle_elapsed=%.3f s",
+                    cycle_number,
+                    overrun,
+                    now - cycle_started,
+                )
+                # If the process fell more than one whole interval behind,
+                # discard missed slots rather than launching catch-up cycles.
+                missed = int(overrun // interval_seconds)
+                if missed:
+                    next_deadline += missed * interval_seconds
+
+    except KeyboardInterrupt:
+        logger.info("Continuous collector stopped by operator")
+        print("\nContinuous collector stopped.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="WISI GT34 central collector"
+    )
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="run continuously on a 5-second start-to-start schedule",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    print_result(collect_once())
+    args = parse_args()
+    if args.continuous:
+        run_continuous()
+    else:
+        print_result(collect_once())
