@@ -78,7 +78,7 @@ def make_whatsapp_email(
     ]
 
     for name in names:
-        text_lines.append(f"Channel: {name}, Status: {status_text}")
+        text_lines.append(f"Channel: {name}: {status_text}")
 
     text_lines.append(f"{satellite}, {band}, {engineering}")
 
@@ -95,7 +95,7 @@ def make_whatsapp_email(
     # HTML body
     channel_rows = "".join(
         f'<div style="font-size:16px;line-height:1.5;">'
-        f'Channel: {escape(name)}, Status: {status_text}'
+        f'Channel: {escape(name)}: {status_text}'
         f'</div>'
         for name in names
     )

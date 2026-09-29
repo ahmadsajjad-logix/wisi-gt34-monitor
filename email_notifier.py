@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+import os
 
 import smtplib
-import os
 import sqlite3
 import ssl
 from contextlib import closing
@@ -19,7 +19,6 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 SMTP_USERNAME = os.getenv("WISI_SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("WISI_SMTP_PASSWORD", "")
-
 EMAIL_FROM = "pemraprtg@gmail.com"
 EMAIL_TO = "pemraalerts@gmail.com"
 EMAIL_SUBJECT = "Transmission Alert"
@@ -474,20 +473,20 @@ def build_channel_transition_message(
         if len(names) == 1:
             channel_name = names[0]
         else:
-            symbol = "âŒ" if new_state == "DOWN" else "âœ…"
+            symbol = "❌" if new_state == "DOWN" else "✅"
             channel_name = "\n" + "\n".join(
-                f"{symbol} {name} â€” {new_state}" for name in names
+                f"{symbol} {name} — {new_state}" for name in names
             )
 
         if new_state == "DOWN":
             if reason == "carrier_unlocked":
-                status = "âŒ DOWN (Carrier UNLOCKED)"
+                status = "❌ DOWN (Carrier UNLOCKED)"
             elif reason == "transport_stream_down":
-                status = "âŒ DOWN (Carrier LOCKED, Transport Stream DOWN)"
+                status = "❌ DOWN (Carrier LOCKED, Transport Stream DOWN)"
             else:
-                status = "âŒ DOWN"
+                status = "❌ DOWN"
         else:
-            status = "âœ… UP"
+            status = "✅ UP"
             if conn is not None:
                 durations = [
                     value
@@ -516,9 +515,9 @@ def build_channel_transition_message(
         if language:
             detail += f", {language}"
         if new_state == "MISSING":
-            status = f"âš ï¸ AUDIO TRACK MISSING ({detail})"
+            status = f"⚠️ AUDIO TRACK MISSING ({detail})"
         else:
-            status = f"âœ… AUDIO TRACK RESTORED ({detail})"
+            status = f"✅ AUDIO TRACK RESTORED ({detail})"
             if conn is not None:
                 duration = transition_downtime_seconds(conn, row)
                 if duration is not None:
@@ -625,4 +624,3 @@ def send_channel_transition_notifications(
         sent=sent,
         skipped_already_sent=skipped,
     )
-

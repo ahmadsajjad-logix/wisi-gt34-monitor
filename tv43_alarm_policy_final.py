@@ -34,7 +34,15 @@ LOG_PATH = ROOT / "logs" / "tv43_alarm_policy.log"
 CHECK_INTERVAL_SECONDS = 5
 SNAPSHOT_STALE_SECONDS = 120
 ALARM_PERSISTENCE_SECONDS = 15
+CARRIER_UNLOCK_PERSISTENCE_SECONDS = 20
+NULL_PAYLOAD_PERSISTENCE_SECONDS = 20
 RECOVERY_PERSISTENCE_SECONDS = 10
+
+# Collector normally produces observations about every 5 seconds.
+# A gap greater than this breaks continuous DOWN/UP persistence.
+PERSISTENCE_MAX_SAMPLE_GAP_SECONDS = 8
+CURSOR_BOOTSTRAP_HISTORY_SECONDS = 30
+
 SUBJECT = "Transmission Alert"
 
 # Carrier identity is resolved dynamically from the validated administrative RF
@@ -243,6 +251,34 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             affected_json TEXT NOT NULL,
             status_line TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS carrier_sample_cursor (
+            carrier_key TEXT PRIMARY KEY,
+            last_processed_sampled_at TEXT NOT NULL,
+            configured_tuner_db_id INTEGER,
+            resolved_tuner_db_id INTEGER,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS email_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_key TEXT NOT NULL UNIQUE,
+            carrier_key TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            episode_targets_json TEXT NOT NULL,
+            message_bytes BLOB NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            next_attempt_at TEXT,
+            last_error TEXT,
+            sent_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_email_outbox_pending
+        ON email_outbox(status, id);
         """
     )
     conn.commit()
@@ -376,206 +412,564 @@ def read_monitor_snapshot(
     meta: dict[str, Any],
     expected_services: dict[str, tuple[tuple[int, str], ...]],
 ) -> dict[str, Any] | None:
-    """Resolve the administrative carrier to the current WISI path by RF identity.
+    """Resolve the administrative carrier to its current live WISI path.
 
-    Permanent identity is the validated host/module + RF frequency/polarisation/
-    symbol-rate fingerprint. Configured-input and tuner-object IDs are current
-    routing attributes and are never derived from the administrative channel.
+    The administrative host/key, RF fingerprint and expected-service definition
+    remain stable. Module number, configured-input ID, tuner-object ID and UUID
+    are live routing attributes and may change after GT34 hardware/configuration
+    changes.
+
+    Search every current module on the administrative chassis for the exact RF
+    fingerprint. Rank current RESOLVED WISI relationships by exact normalized
+    identity-name agreement, enabled state, then clean WISI relationship status.
+    The winner must be unique; ambiguity remains fail-closed.
     """
     key = f"{meta['host']}|M{int(meta['module'])}C{int(meta['channel'])}"
     expected = expected_services[key]
     expected_rows = [{"sid": sid, "name": name} for sid, name in expected]
 
-    module_row = monitor_conn.execute(
-        """SELECT m.id AS module_id
+    module_rows = monitor_conn.execute(
+        """SELECT m.id AS module_id, m.module_number
            FROM chassis ch JOIN modules m ON m.chassis_id=ch.id
-           WHERE ch.host=? AND m.module_number=? LIMIT 1""",
-        (meta["host"], meta["module"]),
-    ).fetchone()
-    if module_row is None:
-        return None
-    module_id = int(module_row["module_id"])
-
-    latest_cfg = monitor_conn.execute(
-        "SELECT MAX(sampled_at) AS sampled_at FROM tuner_config_samples WHERE module_id=?",
-        (module_id,),
-    ).fetchone()
-    sampled_at = None if latest_cfg is None else latest_cfg["sampled_at"]
-    if sampled_at is None:
-        return None
-    sampled_at = str(sampled_at)
-
-    # Exact administrative RF fingerprint with tiny representation tolerance.
-    rf_rows = monitor_conn.execute(
-        """SELECT * FROM tuner_config_samples
-           WHERE module_id=? AND sampled_at=?
-             AND ABS(frequency_mhz-?)<=?
-             AND UPPER(COALESCE(polarisation,''))=?
-             AND ABS(symbol_rate_mbd-?)<=?
-           ORDER BY tuner_object_id""",
-        (
-            module_id, sampled_at, float(meta["frequency_mhz"]),
-            RF_FREQUENCY_TOLERANCE_MHZ, str(meta["polarisation"]).upper(),
-            float(meta["symbol_rate_mbd"]), RF_SYMBOL_RATE_TOLERANCE_MBD,
-        ),
+           WHERE ch.host=?
+           ORDER BY m.module_number""",
+        (meta["host"],),
     ).fetchall()
+    if not module_rows:
+        return None
 
-    if not rf_rows:
-        # A carrier that was previously positively observable and whose RF
-        # configuration subsequently disappears is an alarmable expected-path
-        # disappearance. A carrier never positively bound remains fail-closed.
-        prior_observable = monitor_conn.execute(
-            """SELECT 1
-               FROM tuner_config_samples tc
-               JOIN input_tuner_mapping_samples ms
-                 ON ms.module_id=tc.module_id
-                AND ms.sampled_at=tc.sampled_at
-                AND ms.tuner_object_id=tc.tuner_object_id
-               WHERE tc.module_id=? AND tc.sampled_at<?
-                 AND ABS(tc.frequency_mhz-?)<=?
-                 AND UPPER(COALESCE(tc.polarisation,''))=?
-                 AND ABS(tc.symbol_rate_mbd-?)<=?
-                 AND tc.enabled=1
-                 AND ms.mapping_status='RESOLVED'
-                 AND ms.input_enabled=1
-               LIMIT 1""",
-            (
-                module_id, sampled_at, float(meta["frequency_mhz"]),
-                RF_FREQUENCY_TOLERANCE_MHZ, str(meta["polarisation"]).upper(),
-                float(meta["symbol_rate_mbd"]), RF_SYMBOL_RATE_TOLERANCE_MBD,
-            ),
-        ).fetchone()
-        if prior_observable is not None:
-            return {
-                "host": meta["host"], "module": int(meta["module"]),
-                "channel": int(meta["channel"]), "observed_at": sampled_at,
-                "execution_error": None, "expected_path_absent": True,
-                "channels": {}, "expected_services": expected_rows,
-                "missing_services": [], "es_missing_services": [],
-                "source": "central_sqlite_dynamic_identity",
-                "configured_input_id": None, "resolved_tuner_object_id": None,
-                "configured_name": None, "configured_uuid": None,
-            }
-        return _monitoring_path_unavailable(meta, expected_rows, sampled_at)
-
-    candidate_tuners = {int(r["tuner_object_id"]) for r in rf_rows}
-    placeholders = ",".join("?" for _ in candidate_tuners)
-    mapping_rows = monitor_conn.execute(
-        f"""SELECT * FROM input_tuner_mapping_samples
-            WHERE module_id=? AND sampled_at=?
-              AND tuner_object_id IN ({placeholders})
-              AND mapping_status='RESOLVED'
-            ORDER BY configured_input_id""",
-        (module_id, sampled_at, *sorted(candidate_tuners)),
-    ).fetchall()
-
-    # Rank only current relationships. Administrative/WISI name agreement is
-    # strongest; an enabled relationship is the secondary discriminator. A tie
-    # is deliberately unresolved rather than guessed.
     admin_name = _identity_name(meta.get("identity_name"))
-    ranked: list[tuple[tuple[int, int], sqlite3.Row]] = []
-    for row in mapping_rows:
-        name_match = int(bool(admin_name) and _identity_name(row["configured_name"]) == admin_name)
-        enabled = int(row["input_enabled"] == 1)
-        ranked.append(((name_match, enabled), row))
+    ranked: list[
+        tuple[tuple[int, int, int], sqlite3.Row, sqlite3.Row, int, int, str]
+    ] = []
+    latest_seen: str | None = None
+
+    for module_row in module_rows:
+        live_module_id = int(module_row["module_id"])
+        live_module_number = int(module_row["module_number"])
+
+        latest_cfg = monitor_conn.execute(
+            """SELECT MAX(sampled_at) AS sampled_at
+               FROM tuner_config_samples
+               WHERE module_id=?""",
+            (live_module_id,),
+        ).fetchone()
+
+        sampled_at = None if latest_cfg is None else latest_cfg["sampled_at"]
+        if sampled_at is None:
+            continue
+        sampled_at = str(sampled_at)
+
+        if latest_seen is None or sampled_at > latest_seen:
+            latest_seen = sampled_at
+
+        rf_rows = monitor_conn.execute(
+            """SELECT * FROM tuner_config_samples
+               WHERE module_id=? AND sampled_at=?
+                 AND ABS(frequency_mhz-?)<=?
+                 AND UPPER(COALESCE(polarisation,''))=?
+                 AND ABS(symbol_rate_mbd-?)<=?
+               ORDER BY tuner_object_id""",
+            (
+                live_module_id,
+                sampled_at,
+                float(meta["frequency_mhz"]),
+                RF_FREQUENCY_TOLERANCE_MHZ,
+                str(meta["polarisation"]).upper(),
+                float(meta["symbol_rate_mbd"]),
+                RF_SYMBOL_RATE_TOLERANCE_MBD,
+            ),
+        ).fetchall()
+
+        if not rf_rows:
+            continue
+
+        rf_by_tuner = {
+            int(row["tuner_object_id"]): row
+            for row in rf_rows
+        }
+
+        candidate_tuners = sorted(rf_by_tuner)
+        placeholders = ",".join("?" for _ in candidate_tuners)
+
+        mapping_rows = monitor_conn.execute(
+            f"""SELECT * FROM input_tuner_mapping_samples
+                WHERE module_id=? AND sampled_at=?
+                  AND tuner_object_id IN ({placeholders})
+                  AND mapping_status='RESOLVED'
+                ORDER BY configured_input_id""",
+            (
+                live_module_id,
+                sampled_at,
+                *candidate_tuners,
+            ),
+        ).fetchall()
+
+        for mapping in mapping_rows:
+            tuner_object_id = int(mapping["tuner_object_id"])
+            rf = rf_by_tuner.get(tuner_object_id)
+            if rf is None:
+                continue
+
+            name_match = int(
+                bool(admin_name)
+                and _identity_name(mapping["configured_name"]) == admin_name
+            )
+            enabled = int(mapping["input_enabled"] == 1)
+            clean_status = int(
+                str(mapping["error_status"] or "").strip().lower() == "no error"
+            )
+
+            ranked.append(
+                (
+                    (name_match, enabled, clean_status),
+                    mapping,
+                    rf,
+                    live_module_id,
+                    live_module_number,
+                    sampled_at,
+                )
+            )
+
+    observed_at = latest_seen or datetime.now(timezone.utc).isoformat()
 
     if not ranked:
-        # RF identity exists but there is no current configured-input route.
-        return _monitoring_path_unavailable(meta, expected_rows, sampled_at)
+        # No current RF/mapping candidate exists.
+        # Do not scan the complete historical collector database here.
+        # Persistent policy cursor state later distinguishes a previously
+        # established path from a never-established monitoring path.
+        return _monitoring_path_unavailable(
+            meta, expected_rows, observed_at
+        )
 
-    best_score = max(score for score, _ in ranked)
-    winners = [row for score, row in ranked if score == best_score]
+    best_score = max(score for score, *_ in ranked)
+    winners = [
+        (
+            mapping,
+            rf,
+            live_module_id,
+            live_module_number,
+            sampled_at,
+        )
+        for (
+            score,
+            mapping,
+            rf,
+            live_module_id,
+            live_module_number,
+            sampled_at,
+        ) in ranked
+        if score == best_score
+    ]
+
     if len(winners) != 1:
-        return _monitoring_path_unavailable(meta, expected_rows, sampled_at)
+        return _monitoring_path_unavailable(
+            meta, expected_rows, observed_at
+        )
 
-    mapping = winners[0]
+    (
+        mapping,
+        rf,
+        live_module_id,
+        live_module_number,
+        sampled_at,
+    ) = winners[0]
+
     configured_input_id = int(mapping["configured_input_id"])
     tuner_object_id = int(mapping["tuner_object_id"])
 
-    # A configured RF identity on a disabled tuner/input is known but not
-    # currently observable. Do not manufacture a transmission DOWN state.
-    rf = next(r for r in rf_rows if int(r["tuner_object_id"]) == tuner_object_id)
-    if rf["enabled"] != 1 or mapping["input_enabled"] != 1:
-        return _monitoring_path_unavailable(
-            meta, expected_rows, sampled_at,
-            configured_input_id=configured_input_id,
-            tuner_object_id=tuner_object_id,
-            configured_name=mapping["configured_name"],
-            configured_uuid=mapping["configured_uuid"],
-        )
-
-    # Demodulator health follows the resolved WISI tuner object.
+    # Demodulator health follows the dynamically resolved live module/tuner.
     tuner = monitor_conn.execute(
-        """SELECT ts.lock_state,ts.enabled,ts.state,ts.disabled
+        """SELECT
+               t.id AS resolved_tuner_db_id,
+               ts.lock_state,
+               ts.enabled,
+               ts.state,
+               ts.disabled
            FROM tuners t JOIN tuner_samples ts ON ts.tuner_id=t.id
            WHERE t.module_id=? AND t.input_id=? AND ts.sampled_at=?
            ORDER BY ts.id DESC LIMIT 1""",
-        (module_id, tuner_object_id, sampled_at),
+        (live_module_id, tuner_object_id, sampled_at),
     ).fetchone()
+
     if tuner is None:
         return _monitoring_path_unavailable(
-            meta, expected_rows, sampled_at,
+            meta,
+            expected_rows,
+            sampled_at,
             configured_input_id=configured_input_id,
             tuner_object_id=tuner_object_id,
             configured_name=mapping["configured_name"],
             configured_uuid=mapping["configured_uuid"],
         )
 
-    # TS/service acquisition is stored by configured logical input, which may
-    # differ from the resolved demodulator object (e.g. Virtual TV).
+    # TS/service acquisition follows the resolved logical input on the live
+    # module. Configured input and tuner object may legitimately differ.
     configured = monitor_conn.execute(
-        "SELECT id AS tuner_id FROM tuners WHERE module_id=? AND input_id=? LIMIT 1",
-        (module_id, configured_input_id),
+        """SELECT id AS tuner_id
+           FROM tuners
+           WHERE module_id=? AND input_id=?
+           LIMIT 1""",
+        (live_module_id, configured_input_id),
     ).fetchone()
+
     if configured is None:
         return _monitoring_path_unavailable(
-            meta, expected_rows, sampled_at,
+            meta,
+            expected_rows,
+            sampled_at,
             configured_input_id=configured_input_id,
             tuner_object_id=tuner_object_id,
             configured_name=mapping["configured_name"],
             configured_uuid=mapping["configured_uuid"],
         )
+
     configured_db_id = int(configured["tuner_id"])
 
     ts_row = monitor_conn.execute(
-        """SELECT current_bitrate_bps FROM ts_samples
-           WHERE tuner_id=? AND sampled_at=? ORDER BY id DESC LIMIT 1""",
+        """SELECT current_bitrate_bps
+           FROM ts_samples
+           WHERE tuner_id=? AND sampled_at=?
+           ORDER BY id DESC LIMIT 1""",
         (configured_db_id, sampled_at),
     ).fetchone()
+
     service_rows = monitor_conn.execute(
-        """SELECT service_id,service_name FROM service_samples
-           WHERE tuner_id=? AND sampled_at=? ORDER BY service_id""",
+        """SELECT service_id,service_name,elementary_stream_count
+           FROM service_samples
+           WHERE tuner_id=? AND sampled_at=?
+           ORDER BY service_id""",
         (configured_db_id, sampled_at),
     ).fetchall()
 
     bitrate = None if ts_row is None else ts_row["current_bitrate_bps"]
+
+    service_observation_available = bool(service_rows)
+
     current_services = {
-        int(r["service_id"]): str(r["service_name"] or f"SID {r['service_id']}")
-        for r in service_rows
+        int(row["service_id"]):
+            str(row["service_name"] or f"SID {row['service_id']}")
+        for row in service_rows
     }
-    missing = [
-        {"sid": sid, "name": name}
-        for sid, name in expected if sid not in current_services
-    ]
+
+    current_es_counts = {
+        int(row["service_id"]): row["elementary_stream_count"]
+        for row in service_rows
+    }
+
+    # An entirely empty service enumeration while the RF/TS path is otherwise
+    # healthy is not affirmative evidence that every expected service is DOWN.
+    # Treat it as unavailable service-level observation for this sample.
+    missing = (
+        [
+            {"sid": sid, "name": name}
+            for sid, name in expected
+            if sid not in current_services
+        ]
+        if service_observation_available
+        else []
+    )
+
+
+    # A service can remain advertised while its elementary streams vanish.
+    # This has been verified for Geo ME, VSH and Star News Asia.
+    # ES=0 is therefore affirmative individual-service DOWN evidence.
+    es_missing = (
+        [
+            {"sid": sid, "name": name}
+            for sid, name in expected
+            if (
+                sid in current_services
+                and current_es_counts.get(sid) is not None
+                and int(current_es_counts[sid]) == 0
+            )
+        ]
+        if service_observation_available
+        else []
+    )
+
     return {
-        "host": meta["host"], "module": int(meta["module"]),
-        "channel": int(meta["channel"]), "observed_at": sampled_at,
+        # Keep administrative module/channel stable for alarm/event identity.
+        "host": meta["host"],
+        "module": int(meta["module"]),
+        "channel": int(meta["channel"]),
+        "observed_at": sampled_at,
         "execution_error": None,
         "channels": {
             "Demod Lock": int(tuner["lock_state"] or 0),
-            "Transport Stream Present": 1 if bitrate is not None and float(bitrate) > 0 else 0,
+            "Transport Stream Present":
+                1 if bitrate is not None and float(bitrate) > 0 else 0,
             "Input Enabled": mapping["input_enabled"],
             "Input State": tuner["state"],
             "Input Disabled": tuner["disabled"],
         },
-        "expected_services": expected_rows, "missing_services": missing,
-        "es_missing_services": [], "source": "central_sqlite_dynamic_identity",
+        "expected_services": expected_rows,
+        "missing_services": missing,
+        "es_missing_services": es_missing,
+        "service_observation_available": service_observation_available,
+        "source": "central_sqlite_dynamic_identity",
         "configured_input_id": configured_input_id,
+        "configured_tuner_db_id": configured_db_id,
         "resolved_tuner_object_id": tuner_object_id,
+        "resolved_tuner_db_id": int(tuner["resolved_tuner_db_id"]),
         "configured_name": mapping["configured_name"],
         "configured_uuid": mapping["configured_uuid"],
+        "live_module": live_module_number,
+        "live_module_db_id": live_module_id,
     }
 
+
+
+def read_resolved_sample_history(
+    monitor_conn: sqlite3.Connection,
+    *,
+    base_snapshot: dict[str, Any],
+    after_sampled_at: datetime,
+    until_sampled_at: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Reconstruct authoritative collector observations for one already-resolved
+    carrier path.
+
+    Lock/demodulator evidence follows resolved_tuner_db_id.
+    TS/service evidence follows configured_tuner_db_id.
+
+    The function is read-only and returns observations in chronological order.
+    A collector timestamp without a TS sample is omitted; that creates a time
+    gap and therefore cannot contribute to persistence.
+    """
+
+    resolved_tuner_db_id = base_snapshot.get(
+        "resolved_tuner_db_id"
+    )
+    configured_tuner_db_id = base_snapshot.get(
+        "configured_tuner_db_id"
+    )
+
+    if (
+        resolved_tuner_db_id is None
+        or configured_tuner_db_id is None
+    ):
+        return []
+
+    if until_sampled_at is None:
+        until_sampled_at = parse_dt(
+            str(base_snapshot["observed_at"])
+        )
+
+    expected_rows = list(
+        base_snapshot.get("expected_services") or []
+    )
+
+    expected = [
+        (int(row["sid"]), str(row["name"]))
+        for row in expected_rows
+    ]
+
+    tuner_rows = monitor_conn.execute(
+        """
+        SELECT
+            id,
+            sampled_at,
+            lock_state,
+            enabled,
+            state,
+            disabled
+        FROM tuner_samples
+        WHERE tuner_id=?
+          AND sampled_at>?
+          AND sampled_at<=?
+        ORDER BY sampled_at,id
+        """,
+        (
+            int(resolved_tuner_db_id),
+            after_sampled_at.isoformat(),
+            until_sampled_at.isoformat(),
+        ),
+    ).fetchall()
+
+    # If duplicates exist for one timestamp, retain the newest database row.
+    tuner_by_time: dict[str, sqlite3.Row] = {}
+
+    for row in tuner_rows:
+        tuner_by_time[str(row["sampled_at"])] = row
+
+    result: list[dict[str, Any]] = []
+
+    for sampled_at in sorted(tuner_by_time):
+        tuner = tuner_by_time[sampled_at]
+
+        ts_row = monitor_conn.execute(
+            """
+            SELECT current_bitrate_bps
+            FROM ts_samples
+            WHERE tuner_id=?
+              AND sampled_at=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                int(configured_tuner_db_id),
+                sampled_at,
+            ),
+        ).fetchone()
+
+        # No TS row means the collector did not provide a complete
+        # transmission observation for this cycle. Do not convert missing
+        # telemetry into a false DOWN or UP state.
+        if ts_row is None:
+            continue
+
+        service_rows = monitor_conn.execute(
+            """
+            SELECT
+                service_id,
+                service_name,
+                elementary_stream_count
+            FROM service_samples
+            WHERE tuner_id=?
+              AND sampled_at=?
+            ORDER BY service_id
+            """,
+            (
+                int(configured_tuner_db_id),
+                sampled_at,
+            ),
+        ).fetchall()
+
+        bitrate = ts_row["current_bitrate_bps"]
+
+        service_observation_available = bool(
+            service_rows
+        )
+
+        pid_rows = monitor_conn.execute(
+            """
+            SELECT p.pid
+            FROM pids AS p
+            JOIN pid_samples AS ps
+              ON ps.pid_id = p.id
+            WHERE p.tuner_id=?
+              AND ps.sampled_at=?
+            ORDER BY p.pid
+            """,
+            (
+                int(configured_tuner_db_id),
+                sampled_at,
+            ),
+        ).fetchall()
+
+        observed_pids = {
+            int(row["pid"])
+            for row in pid_rows
+        }
+
+        pid_observation_available = bool(pid_rows)
+
+        # PID 8191 / 0x1FFF is the MPEG-TS NULL-packet PID.
+        # Missing PID telemetry is UNKNOWN, not payload failure.
+        null_payload_only = (
+            pid_observation_available
+            and observed_pids == {8191}
+        )
+
+        current_services = {
+            int(row["service_id"]):
+                str(
+                    row["service_name"]
+                    or f"SID {row['service_id']}"
+                )
+            for row in service_rows
+        }
+
+        current_es_counts = {
+            int(row["service_id"]):
+                row["elementary_stream_count"]
+            for row in service_rows
+        }
+
+        missing = (
+            [
+                {
+                    "sid": sid,
+                    "name": name,
+                }
+                for sid, name in expected
+                if sid not in current_services
+            ]
+            if service_observation_available
+            else []
+        )
+
+        es_missing = (
+            [
+                {
+                    "sid": sid,
+                    "name": name,
+                }
+                for sid, name in expected
+                if (
+                    sid in current_services
+                    and current_es_counts.get(sid)
+                        is not None
+                    and int(
+                        current_es_counts[sid]
+                    ) == 0
+                )
+            ]
+            if service_observation_available
+            else []
+        )
+
+        historical = dict(base_snapshot)
+
+        historical["observed_at"] = sampled_at
+        historical["execution_error"] = None
+        historical["expected_path_absent"] = False
+
+        historical["channels"] = {
+            "Demod Lock":
+                int(tuner["lock_state"] or 0),
+
+            "Transport Stream Present":
+                (
+                    1
+                    if (
+                        bitrate is not None
+                        and float(bitrate) > 0
+                    )
+                    else 0
+                ),
+
+            "Input Enabled": tuner["enabled"],
+            "Input State": tuner["state"],
+            "Input Disabled": tuner["disabled"],
+        }
+
+        historical["missing_services"] = missing
+        historical["es_missing_services"] = (
+            es_missing
+        )
+        historical[
+            "service_observation_available"
+        ] = service_observation_available
+
+        historical["pid_observation_available"] = (
+            pid_observation_available
+        )
+        historical["observed_pids"] = sorted(
+            observed_pids
+        )
+        historical["null_payload_only"] = (
+            null_payload_only
+        )
+        historical["source"] = (
+            "central_sqlite_resolved_history"
+        )
+
+        result.append(historical)
+
+    return result
 
 def services(snapshot: dict[str, Any], field: str) -> tuple[tuple[int, str], ...]:
     result = []
@@ -629,32 +1023,59 @@ def derive_conditions(snapshot: dict[str, Any]) -> list[Condition]:
             )
         ]
 
-    locked = int(ch.get("Demod Lock", 0) or 0) == 1
-    ts_up = int(ch.get("Transport Stream Present", 0) or 0) == 1
+    locked = int(
+        ch.get("Demod Lock", 0) or 0
+    ) == 1
 
-    # CONDITION 1: carrier lost -> all channels on carrier DOWN.
+    ts_up = int(
+        ch.get("Transport Stream Present", 0) or 0
+    ) == 1
+
+    # CONDITION 1:
+    # A continuously unlocked demodulator is authoritative carrier-down
+    # evidence. Transport Stream Present may remain stale or oscillate
+    # during RF loss and therefore must not override Demod Lock=0.
+    #
+    # The normal 15-second persistence layer prevents short WISI lock
+    # flaps from becoming alarms.
     if not locked:
         return [
             Condition(
                 kind="carrier_unlocked",
                 event_key=f"{prefix}|carrier_down",
                 affected=expected,
-                status_line="❌ Carrier UNLOCKED",
+                status_line="? Carrier UNLOCKED",
             )
         ]
 
-    # CONDITION 2: carrier locked but TS unavailable -> all channels DOWN.
+    # CONDITION 2:
+    # Demodulator is locked, but the transport stream itself is absent.
     if not ts_up:
         return [
             Condition(
                 kind="transport_stream_down",
                 event_key=f"{prefix}|carrier_down",
                 affected=expected,
-                status_line="❌ Carrier LOCKED + Transport Stream DOWN",
+                status_line="? Carrier LOCKED + Transport Stream DOWN",
             )
         ]
 
-    # CONDITION 3: carrier/TS work; only the failed individual services DOWN.
+    # CONDITION 3:
+    # Carrier and TS framing are present, but the observed transport
+    # contains only PID 8191 (NULL packets). This is affirmative
+    # evidence that useful program payload is absent.
+    if bool(snapshot.get("null_payload_only")):
+        return [
+            Condition(
+                kind="transport_payload_down",
+                event_key=f"{prefix}|carrier_down",
+                affected=expected,
+                status_line="? Carrier LOCKED + Transport Payload DOWN (NULL packets only)",
+            )
+        ]
+
+    # CONDITION 4:
+    # Carrier/TS/program payload work; only failed individual services DOWN.
     down_by_sid: dict[int, str] = {}
     for sid, name in missing:
         down_by_sid[sid] = name
@@ -693,6 +1114,196 @@ def make_email(
         occurred_at=occurred_at,
     )
 
+def queue_email(
+    conn: sqlite3.Connection,
+    *,
+    notification_key: str,
+    carrier_key: str,
+    event_type: str,
+    episode_targets: list[dict[str, str | None]],
+    message: EmailMessage,
+    occurred_at: datetime,
+) -> None:
+    """Persist the exact rendered email in the same transaction as alarm state."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO email_outbox(
+            notification_key,
+            carrier_key,
+            event_type,
+            episode_targets_json,
+            message_bytes,
+            occurred_at,
+            created_at,
+            status,
+            attempt_count,
+            last_attempt_at,
+            next_attempt_at,
+            last_error,
+            sent_at
+        )
+        VALUES(?,?,?,?,?,?,?,'PENDING',0,NULL,NULL,NULL,NULL)
+        """,
+        (
+            notification_key,
+            carrier_key,
+            event_type,
+            json.dumps(episode_targets, ensure_ascii=False),
+            sqlite3.Binary(message.as_bytes()),
+            occurred_at.isoformat(),
+            utcnow().isoformat(),
+        ),
+    )
+
+
+def deliver_pending_emails(
+    conn: sqlite3.Connection,
+    log: logging.Logger,
+) -> int:
+    """
+    Deliver queued email strictly in outbox ID order.
+
+    Stop after the first SMTP failure so a later recovery notification can never
+    overtake an earlier alarm notification.
+    """
+    from email import policy
+    from email.parser import BytesParser
+
+    delivered = 0
+
+    while True:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM email_outbox
+            WHERE status='PENDING'
+            ORDER BY id
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if row is None:
+            break
+
+        outbox_id = int(row["id"])
+        now = utcnow()
+
+        next_attempt_raw = row["next_attempt_at"]
+        if next_attempt_raw:
+            next_attempt = parse_dt(str(next_attempt_raw))
+            if now < next_attempt:
+                break
+
+        attempt_at = now.isoformat()
+
+        try:
+            msg = BytesParser(policy=policy.default).parsebytes(
+                bytes(row["message_bytes"])
+            )
+
+            send_message(msg)
+
+        except Exception as exc:
+            # Retry after 60 seconds. Keep the row PENDING permanently until
+            # successful delivery; never delete a failed notification.
+            next_attempt = now + timedelta(seconds=60)
+
+            conn.execute(
+                """
+                UPDATE email_outbox
+                SET attempt_count=attempt_count+1,
+                    last_attempt_at=?,
+                    next_attempt_at=?,
+                    last_error=?
+                WHERE id=? AND status='PENDING'
+                """,
+                (
+                    attempt_at,
+                    next_attempt.isoformat(),
+                    f"{type(exc).__name__}: {exc}"[:2000],
+                    outbox_id,
+                ),
+            )
+            conn.commit()
+
+            log.error(
+                "EMAIL OUTBOX DELIVERY FAILED | id=%d | key=%s | "
+                "attempt=%d | retry_at=%s | error=%s",
+                outbox_id,
+                str(row["notification_key"]),
+                int(row["attempt_count"]) + 1,
+                next_attempt.isoformat(),
+                exc,
+            )
+
+            # Strict ordering: do not send any later notification while this
+            # earlier one remains undelivered.
+            break
+
+        sent_at = utcnow().isoformat()
+        episode_targets = json.loads(str(row["episode_targets_json"]))
+        event_type = str(row["event_type"])
+
+        # Update delivery metadata only if alert_episode still represents the
+        # exact episode that produced this queued notification. event_key is
+        # intentionally reusable across later DOWN/UP cycles.
+        for target in episode_targets:
+            event_key = str(target["event_key"])
+            started_at = str(target["started_at"])
+
+            if event_type == "ALARM":
+                conn.execute(
+                    """
+                    UPDATE alert_episode
+                    SET alarm_email_sent_at=?
+                    WHERE event_key=? AND started_at=?
+                    """,
+                    (sent_at, event_key, started_at),
+                )
+            elif event_type == "RECOVERY":
+                cleared_at = str(target["cleared_at"])
+                conn.execute(
+                    """
+                    UPDATE alert_episode
+                    SET recovery_email_sent_at=?
+                    WHERE event_key=? AND started_at=? AND cleared_at=?
+                    """,
+                    (sent_at, event_key, started_at, cleared_at),
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported email_outbox event_type: {event_type}"
+                )
+
+        conn.execute(
+            """
+            UPDATE email_outbox
+            SET status='SENT',
+                attempt_count=attempt_count+1,
+                last_attempt_at=?,
+                next_attempt_at=NULL,
+                last_error=NULL,
+                sent_at=?
+            WHERE id=? AND status='PENDING'
+            """,
+            (sent_at, sent_at, outbox_id),
+        )
+        conn.commit()
+
+        delivered += 1
+
+        log.info(
+            "EMAIL OUTBOX DELIVERED | id=%d | key=%s | event_type=%s | "
+            "episodes=%d",
+            outbox_id,
+            str(row["notification_key"]),
+            str(row["event_type"]),
+            len(episode_targets),
+        )
+
+    return delivered
+
+
 def insert_history(
     conn: sqlite3.Connection,
     *,
@@ -729,6 +1340,64 @@ def insert_history(
     )
 
 
+
+def get_carrier_sample_cursor(
+    conn: sqlite3.Connection,
+    carrier_key: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            carrier_key,
+            last_processed_sampled_at,
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            updated_at
+        FROM carrier_sample_cursor
+        WHERE carrier_key=?
+        """,
+        (carrier_key,),
+    ).fetchone()
+
+
+def set_carrier_sample_cursor(
+    conn: sqlite3.Connection,
+    *,
+    carrier_key: str,
+    sampled_at: datetime,
+    configured_tuner_db_id: int | None,
+    resolved_tuner_db_id: int | None,
+) -> None:
+    now = utcnow().isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO carrier_sample_cursor(
+            carrier_key,
+            last_processed_sampled_at,
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            updated_at
+        )
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(carrier_key) DO UPDATE SET
+            last_processed_sampled_at=
+                excluded.last_processed_sampled_at,
+            configured_tuner_db_id=
+                excluded.configured_tuner_db_id,
+            resolved_tuner_db_id=
+                excluded.resolved_tuner_db_id,
+            updated_at=
+                excluded.updated_at
+        """,
+        (
+            carrier_key,
+            sampled_at.isoformat(),
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            now,
+        ),
+    )
 
 def _candidate_row(conn: sqlite3.Connection, event_key: str, direction: str) -> sqlite3.Row | None:
     return conn.execute(
@@ -780,6 +1449,43 @@ def _qualify_candidate(
         return False, observed_at
 
     first_seen = parse_dt(str(row["first_seen_at"]))
+    last_seen = parse_dt(str(row["last_seen_at"]))
+
+    # Persistence must be supported by consecutive observations of the
+    # SAME underlying condition. A cause change (for example carrier_unlocked
+    # -> transport_stream_down), a missing sample, or a late sample starts a
+    # fresh persistence interval.
+    gap_seconds = (observed_at - last_seen).total_seconds()
+    condition_kind_changed = (
+        str(row["condition_kind"]) != condition.kind
+    )
+
+    if (
+        condition_kind_changed
+        or gap_seconds < 0
+        or gap_seconds > PERSISTENCE_MAX_SAMPLE_GAP_SECONDS
+    ):
+        conn.execute(
+            """
+            UPDATE transition_candidate
+            SET first_seen_at=?,
+                last_seen_at=?,
+                condition_kind=?,
+                affected_json=?,
+                status_line=?
+            WHERE event_key=?
+            """,
+            (
+                observed_at.isoformat(),
+                observed_at.isoformat(),
+                condition.kind,
+                json.dumps(condition.affected, ensure_ascii=False),
+                condition.status_line,
+                condition.event_key,
+            ),
+        )
+        return False, observed_at
+
     conn.execute(
         """
         UPDATE transition_candidate
@@ -794,7 +1500,11 @@ def _qualify_candidate(
             condition.event_key,
         ),
     )
-    qualified = (observed_at - first_seen).total_seconds() >= threshold_seconds
+
+    qualified = (
+        observed_at - first_seen
+    ).total_seconds() >= threshold_seconds
+
     return qualified, first_seen
 
 def process_snapshot(
@@ -811,12 +1521,90 @@ def process_snapshot(
         return
 
     # A known unavailable monitoring path is coverage state, not transmission
-    # state and not an execution failure. Preserve every existing episode and
-    # candidate exactly as-is; infer neither Channel DOWN nor Channel UP.
+    # state and not affirmative evidence of either Channel DOWN or Channel UP.
+    #
+    # If legacy active episodes exist for this administrative carrier, retire
+    # them silently so they do not remain indefinitely active after monitoring
+    # authority has been lost. This is administrative state reconciliation,
+    # NOT a transmission recovery: no recovery email and no RECOVERY history
+    # event are generated.
     if snapshot.get("execution_error") == "MONITORING_PATH_UNAVAILABLE":
+        stale_rows = conn.execute(
+            """
+            SELECT event_key,condition_kind
+            FROM alert_episode
+            WHERE host=? AND module=? AND channel=? AND active=1
+            """,
+            (meta["host"], meta["module"], meta["channel"]),
+        ).fetchall()
+
+        for stale_row in stale_rows:
+            stale_event_key = str(stale_row["event_key"])
+
+            conn.execute(
+                """
+                UPDATE alert_episode
+                SET active=0,
+                    cleared_at=?,
+                    last_seen_at=?
+                WHERE event_key=? AND active=1
+                """,
+                (
+                    observed_at.isoformat(),
+                    observed_at.isoformat(),
+                    stale_event_key,
+                ),
+            )
+
+            _clear_candidate(conn, stale_event_key)
+
+            log.warning(
+                "ACTIVE EPISODE SILENTLY RETIRED | %s | kind=%s | "
+                "reason=MONITORING_PATH_UNAVAILABLE | recovery_email=NOT_SENT",
+                stale_event_key,
+                str(stale_row["condition_kind"]),
+            )
+
+        # Also remove orphaned pending candidates belonging to this carrier.
+        conn.execute(
+            "DELETE FROM transition_candidate WHERE event_key LIKE ?",
+            (f"{key}|%",),
+        )
+
         return
 
     current = {c.event_key: c for c in derive_conditions(snapshot)}
+
+    # Service enumeration can occasionally be absent even though the carrier
+    # remains locked and the transport stream remains present. That is
+    # service-observation uncertainty, not proof of service DOWN or service UP.
+    #
+    # Preserve any already-active individual-service alarms, and discard their
+    # pending ALARM/RECOVERY persistence candidates so a later authoritative
+    # service observation must establish a fresh continuous interval.
+    service_observation_available = snapshot.get(
+        "service_observation_available", True
+    )
+
+    if not service_observation_available:
+        pending_service_rows = conn.execute(
+            """
+            SELECT event_key
+            FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|service_down|SID%",),
+        ).fetchall()
+
+        for pending_service in pending_service_rows:
+            _clear_candidate(conn, str(pending_service["event_key"]))
+
+        # Do not let unavailable enumeration create service-down conditions.
+        current = {
+            event_key: condition
+            for event_key, condition in current.items()
+            if condition.kind != "individual_service_down"
+        }
 
     active_rows = conn.execute(
         """
@@ -826,6 +1614,55 @@ def process_snapshot(
         (meta["host"], meta["module"], meta["channel"]),
     ).fetchall()
     active = {str(row["event_key"]): row for row in active_rows}
+
+    # Individual-service state is authoritative only while the parent
+    # carrier AND transport stream are available and service enumeration is
+    # authoritative.  If the parent carrier/TS is DOWN, disappearance of an
+    # individual_service_down condition does NOT prove that service recovered.
+    #
+    # Preserve established service episodes underneath the parent outage.
+    # Once carrier+TS+service observation becomes authoritative again, the
+    # normal recovery path may close an episode only if its SID is actually
+    # present.  This prevents contradictory multiplex DOWN + service UP emails.
+    ch = dict(snapshot.get("channels") or {})
+    parent_transmission_available = (
+        int(ch.get("Demod Lock", 0) or 0) == 1
+        and int(ch.get("Transport Stream Present", 0) or 0) == 1
+        and not bool(snapshot.get("null_payload_only"))
+    )
+    service_state_authoritative = (
+        service_observation_available and parent_transmission_available
+    )
+
+    if not service_state_authoritative:
+        # A pending service transition cannot accumulate persistence while
+        # service state is unobservable beneath a parent carrier/TS outage.
+        pending_service_rows = conn.execute(
+            """
+            SELECT event_key
+            FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|service_down|SID%",),
+        ).fetchall()
+
+        for pending_service in pending_service_rows:
+            _clear_candidate(conn, str(pending_service["event_key"]))
+
+        # Keep established individual-service alarms logically active.
+        # This suppresses false service recovery while the parent transmission
+        # path cannot provide authoritative per-service evidence.
+        for event_key, row in active.items():
+            if str(row["condition_kind"]) == "individual_service_down":
+                current[event_key] = Condition(
+                    kind="individual_service_down",
+                    event_key=event_key,
+                    affected=tuple(
+                        (int(item[0]), str(item[1]))
+                        for item in json.loads(str(row["affected_json"]))
+                    ),
+                    status_line=str(row["status_line"]),
+                )
 
     # Identify raw transitions. Transmission alarms/recoveries are qualified
     # below with configured persistence; execution_failure remains immediate
@@ -874,19 +1711,26 @@ def process_snapshot(
             _clear_candidate(conn, event_key)
             new_items.append((event_key, condition, observed_at))
             continue
+        if condition.kind == "carrier_unlocked":
+            alarm_threshold_seconds = CARRIER_UNLOCK_PERSISTENCE_SECONDS
+        elif condition.kind == "transport_payload_down":
+            alarm_threshold_seconds = NULL_PAYLOAD_PERSISTENCE_SECONDS
+        else:
+            alarm_threshold_seconds = ALARM_PERSISTENCE_SECONDS
+
         qualified, first_seen = _qualify_candidate(
             conn,
             condition=condition,
             direction="ALARM",
             observed_at=observed_at,
-            threshold_seconds=ALARM_PERSISTENCE_SECONDS,
+            threshold_seconds=alarm_threshold_seconds,
         )
         if qualified:
             _clear_candidate(conn, event_key, "ALARM")
             new_items.append((event_key, condition, first_seen))
             log.info(
                 "ALARM PERSISTENCE QUALIFIED | %s | first_seen=%s | threshold=%ss",
-                event_key, first_seen.isoformat(), ALARM_PERSISTENCE_SECONDS,
+                event_key, first_seen.isoformat(), alarm_threshold_seconds,
             )
 
     recovery_items: list[tuple[str, sqlite3.Row, datetime]] = []
@@ -969,23 +1813,14 @@ def process_snapshot(
         # Persistence decides whether to notify; the reported transition time is
         # the first authoritative observation of the sustained condition.
         started_at = first_seen
-        if condition.kind != "execution_failure":
-            # The qualifying observation occurs after persistence has elapsed.
-            # Recover the start of the sustained condition from recent immutable
-            # monitor samples where possible via native correlation for carrier
-            # unlock; other conditions retain qualification time.
-            pass
-        if condition.kind == "carrier_unlocked":
-            native_start, _ = native_carrier_times(
-                meta, observed_at=observed_at, log=log
-            )
-            if native_start is not None:
-                started_at = native_start
-                log.info(
-                    "Using WISI native DOWN time | %s | %s",
-                    event_key,
-                    local_time(started_at),
-                )
+        # The qualifying observation occurs after persistence has elapsed,
+        # but the reported DOWN boundary remains the first authoritative
+        # observation that began the persistence-qualified condition.
+        # The persistence candidate's first authoritative monitor observation
+        # is the canonical DOWN timestamp. WISI native event-log timestamps are
+        # deliberately not substituted here: a nearby historical native event
+        # may belong to a different RF interruption and can otherwise produce an
+        # impossible sub-persistence reported outage.
 
         msg = make_email(
             meta=meta,
@@ -994,7 +1829,6 @@ def process_snapshot(
             started_at=started_at,
             occurred_at=started_at,
         )
-        send_message(msg)
 
         conn.execute(
             """
@@ -1003,7 +1837,7 @@ def process_snapshot(
                 started_at,last_seen_at,cleared_at,affected_json,status_line,
                 alarm_email_sent_at,recovery_email_sent_at
             )
-            VALUES(?,?,?,?,?,1,?,?,NULL,?,?,?,NULL)
+            VALUES(?,?,?,?,?,1,?,?,NULL,?,?,NULL,NULL)
             ON CONFLICT(event_key) DO UPDATE SET
                 active=1,
                 condition_kind=excluded.condition_kind,
@@ -1025,7 +1859,6 @@ def process_snapshot(
                 observed_at.isoformat(),
                 json.dumps(condition.affected, ensure_ascii=False),
                 condition.status_line,
-                utcnow().isoformat(),
             ),
         )
         insert_history(
@@ -1035,8 +1868,23 @@ def process_snapshot(
             occurred_at=started_at,
             started_at=started_at,
         )
+        queue_email(
+            conn,
+            notification_key=f"ALARM|{event_key}|{started_at.isoformat()}",
+            carrier_key=key,
+            event_type="ALARM",
+            episode_targets=[
+                {
+                    "event_key": event_key,
+                    "started_at": started_at.isoformat(),
+                    "cleared_at": None,
+                }
+            ],
+            message=msg,
+            occurred_at=started_at,
+        )
         log.error(
-            "ALARM EMAIL SENT IMMEDIATELY | %s | %s",
+            "ALARM RECORDED + EMAIL QUEUED | %s | %s",
             event_key,
             condition.status_line,
         )
@@ -1066,9 +1914,7 @@ def process_snapshot(
             started_at=started_at,
             occurred_at=started_at,
         )
-        send_message(msg)
 
-        sent_at = utcnow().isoformat()
         for event_key, condition, _first_seen in individual_new:
             conn.execute(
                 """
@@ -1077,7 +1923,7 @@ def process_snapshot(
                     started_at,last_seen_at,cleared_at,affected_json,status_line,
                     alarm_email_sent_at,recovery_email_sent_at
                 )
-                VALUES(?,?,?,?,?,1,?,?,NULL,?,?,?,NULL)
+                VALUES(?,?,?,?,?,1,?,?,NULL,?,?,NULL,NULL)
                 ON CONFLICT(event_key) DO UPDATE SET
                     active=1,
                     condition_kind=excluded.condition_kind,
@@ -1099,7 +1945,6 @@ def process_snapshot(
                     observed_at.isoformat(),
                     json.dumps(condition.affected, ensure_ascii=False),
                     condition.status_line,
-                    sent_at,
                 ),
             )
             insert_history(
@@ -1110,8 +1955,29 @@ def process_snapshot(
                 started_at=started_at,
             )
 
+        queue_email(
+            conn,
+            notification_key=(
+                f"ALARM|{batch_condition.event_key}|{started_at.isoformat()}|"
+                + ",".join(event_key for event_key, _, _ in individual_new)
+            ),
+            carrier_key=key,
+            event_type="ALARM",
+            episode_targets=[
+                {
+                    "event_key": event_key,
+                    "started_at": first_seen.isoformat(),
+                    "cleared_at": None,
+                }
+                for event_key, _, first_seen in individual_new
+            ],
+            message=msg,
+            occurred_at=started_at,
+        )
+
         log.error(
-            "MULTIPLEX ALARM EMAIL SENT IMMEDIATELY | %s | services=%d | sids=%s",
+            "MULTIPLEX ALARM RECORDED + EMAIL QUEUED | %s | "
+            "services=%d | sids=%s",
             key,
             len(affected),
             ",".join(str(sid) for sid, _ in affected),
@@ -1192,22 +2058,10 @@ def process_snapshot(
             )
             continue
 
-        if condition.kind == "carrier_unlocked":
-            native_start, native_end = native_carrier_times(
-                meta,
-                observed_at=recovery_first_seen,
-                started_at=started_at,
-                recovery=True,
-                log=log,
-            )
-            if native_start is not None and native_end is not None:
-                started_at = native_start
-                cleared_at = native_end
-                log.info(
-                    "Using WISI native UP time | %s | %s",
-                    event_key,
-                    local_time(cleared_at),
-                )
+        # The first authoritative healthy monitor observation is the
+        # canonical UP timestamp. Do not replace either episode boundary with
+        # WISI native event-log timestamps; persistence-qualified monitor
+        # observations remain authoritative for notification and downtime.
 
         msg = make_email(
             meta=meta,
@@ -1216,17 +2070,15 @@ def process_snapshot(
             started_at=started_at,
             occurred_at=cleared_at,
         )
-        send_message(msg)
 
         conn.execute(
             """
             UPDATE alert_episode
-            SET active=0,cleared_at=?,recovery_email_sent_at=?,last_seen_at=?
+            SET active=0,cleared_at=?,recovery_email_sent_at=NULL,last_seen_at=?
             WHERE event_key=?
             """,
             (
                 cleared_at.isoformat(),
-                utcnow().isoformat(),
                 cleared_at.isoformat(),
                 event_key,
             ),
@@ -1239,7 +2091,22 @@ def process_snapshot(
             started_at=started_at,
             cleared_at=cleared_at,
         )
-        log.info("RECOVERY EMAIL SENT IMMEDIATELY | %s", event_key)
+        queue_email(
+            conn,
+            notification_key=f"RECOVERY|{event_key}|{cleared_at.isoformat()}",
+            carrier_key=key,
+            event_type="RECOVERY",
+            episode_targets=[
+                {
+                    "event_key": event_key,
+                    "started_at": started_at.isoformat(),
+                    "cleared_at": cleared_at.isoformat(),
+                }
+            ],
+            message=msg,
+            occurred_at=cleared_at,
+        )
+        log.info("RECOVERY RECORDED + EMAIL QUEUED | %s", event_key)
 
     # All service recoveries detected together on this carrier are one email.
     if individual_recoveries:
@@ -1272,19 +2139,16 @@ def process_snapshot(
             started_at=batch_started_at,
             occurred_at=cleared_at,
         )
-        send_message(msg)
 
-        sent_at = utcnow().isoformat()
         for event_key, row, condition, started_at, _recovery_first_seen in individual_recoveries:
             conn.execute(
                 """
                 UPDATE alert_episode
-                SET active=0,cleared_at=?,recovery_email_sent_at=?,last_seen_at=?
+                SET active=0,cleared_at=?,recovery_email_sent_at=NULL,last_seen_at=?
                 WHERE event_key=?
                 """,
                 (
                     cleared_at.isoformat(),
-                    sent_at,
                     cleared_at.isoformat(),
                     event_key,
                 ),
@@ -1298,13 +2162,332 @@ def process_snapshot(
                 cleared_at=cleared_at,
             )
 
+        queue_email(
+            conn,
+            notification_key=(
+                f"RECOVERY|{batch_condition.event_key}|{cleared_at.isoformat()}|"
+                + ",".join(
+                    event_key
+                    for event_key, _, _, _, _ in individual_recoveries
+                )
+            ),
+            carrier_key=key,
+            event_type="RECOVERY",
+            episode_targets=[
+                {
+                    "event_key": event_key,
+                    "started_at": episode_started_at.isoformat(),
+                    "cleared_at": cleared_at.isoformat(),
+                }
+                for (
+                    event_key,
+                    _,
+                    _,
+                    episode_started_at,
+                    _,
+                ) in individual_recoveries
+            ],
+            message=msg,
+            occurred_at=cleared_at,
+        )
+
         log.info(
-            "MULTIPLEX RECOVERY EMAIL SENT IMMEDIATELY | %s | services=%d | sids=%s",
+            "MULTIPLEX RECOVERY RECORDED + EMAIL QUEUED | %s | "
+            "services=%d | sids=%s",
             key,
             len(affected),
             ",".join(str(sid) for sid, _ in affected),
         )
 
+
+def process_resolved_history(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    log: logging.Logger,
+    key: str,
+    meta: dict[str, Any],
+    latest_snapshot: dict[str, Any],
+) -> int:
+    """
+    Process every unseen authoritative collector observation for one resolved
+    carrier in chronological order.
+
+    The policy database transaction remains controlled by run_once(). The
+    cursor is therefore committed atomically with the corresponding alarm
+    state/history/outbox changes.
+
+    Returns the number of collector observations processed.
+    """
+
+    # A persistent cursor proves that this administrative carrier previously
+    # had a successfully resolved WISI path.
+    cursor = get_carrier_sample_cursor(
+        conn,
+        key,
+    )
+
+    # If that established path is absent from the CURRENT mapping generation,
+    # interpret it as expected-path disappearance. A carrier that has never
+    # been successfully resolved has no cursor and remains fail-closed as
+    # MONITORING_PATH_UNAVAILABLE.
+    if (
+        latest_snapshot.get("execution_error")
+        == "MONITORING_PATH_UNAVAILABLE"
+        and cursor is not None
+    ):
+        established_absence = dict(
+            latest_snapshot
+        )
+
+        established_absence[
+            "execution_error"
+        ] = None
+
+        established_absence[
+            "expected_path_absent"
+        ] = True
+
+        process_snapshot(
+            conn,
+            log,
+            key,
+            meta,
+            established_absence,
+        )
+
+        return 1
+
+    # A never-established path with no cursor is monitoring uncertainty.
+    # It is neither affirmative DOWN evidence nor affirmative recovery
+    # evidence. Preserve any established active episode until authoritative
+    # observations become available again.
+    if (
+        latest_snapshot.get("execution_error")
+        == "MONITORING_PATH_UNAVAILABLE"
+        and cursor is None
+    ):
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+        log.warning(
+            "MONITORING PATH UNKNOWN - ACTIVE STATE PRESERVED | %s | "
+            "no_cursor=1 | alarm=NOT_INFERRED | recovery=NOT_INFERRED",
+            key,
+        )
+
+        return 0
+
+    # Other execution/mapping failures retain the existing processing path.
+    if (
+        latest_snapshot.get("execution_error")
+        or latest_snapshot.get("expected_path_absent")
+    ):
+        process_snapshot(
+            conn,
+            log,
+            key,
+            meta,
+            latest_snapshot,
+        )
+        return 1
+
+    configured_tuner_db_id = latest_snapshot.get(
+        "configured_tuner_db_id"
+    )
+
+    resolved_tuner_db_id = latest_snapshot.get(
+        "resolved_tuner_db_id"
+    )
+
+    if (
+        configured_tuner_db_id is None
+        or resolved_tuner_db_id is None
+    ):
+        process_snapshot(
+            conn,
+            log,
+            key,
+            meta,
+            latest_snapshot,
+        )
+        return 1
+
+    configured_tuner_db_id = int(
+        configured_tuner_db_id
+    )
+
+    resolved_tuner_db_id = int(
+        resolved_tuner_db_id
+    )
+
+    latest_at = parse_dt(
+        str(latest_snapshot["observed_at"])
+    )
+
+    mapping_changed = False
+
+    if cursor is None:
+        # First commissioning pass:
+        # inspect only a short recent window so a fault that is already
+        # sustained now can qualify without replaying old incidents.
+        after_at = latest_at - timedelta(
+            seconds=CURSOR_BOOTSTRAP_HISTORY_SECONDS
+        )
+
+    else:
+        previous_tuner_db_id = cursor[
+            "configured_tuner_db_id"
+        ]
+
+        previous_resolved_tuner_db_id = cursor[
+            "resolved_tuner_db_id"
+        ]
+
+        configured_path_changed = (
+            previous_tuner_db_id is not None
+            and int(previous_tuner_db_id)
+                != configured_tuner_db_id
+        )
+
+        resolved_path_changed = (
+            previous_resolved_tuner_db_id is not None
+            and int(previous_resolved_tuner_db_id)
+                != resolved_tuner_db_id
+        )
+
+        if (
+            configured_path_changed
+            or resolved_path_changed
+        ):
+            mapping_changed = True
+
+            # Never accumulate pending persistence across a tuner-path change.
+            # Established episodes remain preserved; only incomplete
+            # ALARM/RECOVERY persistence evidence is discarded.
+            conn.execute(
+                """
+                DELETE FROM transition_candidate
+                WHERE event_key LIKE ?
+                """,
+                (f"{key}|%",),
+            )
+
+            after_at = latest_at - timedelta(
+                seconds=CURSOR_BOOTSTRAP_HISTORY_SECONDS
+            )
+
+            log.warning(
+                "CARRIER PATH ID CHANGED | %s | "
+                "configured:%s->%s | "
+                "resolved:%s->%s | "
+                "pending persistence reset",
+                key,
+                previous_tuner_db_id,
+                configured_tuner_db_id,
+                previous_resolved_tuner_db_id,
+                resolved_tuner_db_id,
+            )
+        else:
+            after_at = parse_dt(
+                str(
+                    cursor[
+                        "last_processed_sampled_at"
+                    ]
+                )
+            )
+
+    # We intentionally do not replay arbitrarily old evidence after a long
+    # policy shutdown. The normal sweep is ~90 seconds, while the established
+    # freshness guard is 120 seconds, so this retains enough history for the
+    # real operational gap while avoiding stale alarm generation.
+    freshness_floor = latest_at - timedelta(
+        seconds=SNAPSHOT_STALE_SECONDS
+    )
+
+    if after_at < freshness_floor:
+        after_at = freshness_floor
+
+        # Any pending transition that depended on evidence older than the
+        # retained authoritative window is no longer continuous.
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+        log.warning(
+            "CARRIER CURSOR BEHIND FRESHNESS WINDOW | %s | "
+            "persistence candidates reset",
+            key,
+        )
+
+    samples = read_resolved_sample_history(
+        monitor_conn,
+        base_snapshot=latest_snapshot,
+        after_sampled_at=after_at,
+        until_sampled_at=latest_at,
+    )
+
+    if not samples:
+        # This can occur if the cursor already equals the latest collector
+        # timestamp. Do not manufacture a duplicate observation.
+        if cursor is None or mapping_changed:
+            set_carrier_sample_cursor(
+                conn,
+                carrier_key=key,
+                sampled_at=latest_at,
+                configured_tuner_db_id=
+                    configured_tuner_db_id,
+                    resolved_tuner_db_id=
+                        resolved_tuner_db_id,
+            )
+
+        return 0
+
+    processed = 0
+
+    for sample in samples:
+        process_snapshot(
+            conn,
+            log,
+            key,
+            meta,
+            sample,
+        )
+
+        sample_at = parse_dt(
+            str(sample["observed_at"])
+        )
+
+        set_carrier_sample_cursor(
+            conn,
+            carrier_key=key,
+            sampled_at=sample_at,
+            configured_tuner_db_id=
+                configured_tuner_db_id,
+                resolved_tuner_db_id=
+                    resolved_tuner_db_id,
+        )
+
+        processed += 1
+
+    log.debug(
+        "SEQUENTIAL COLLECTOR HISTORY PROCESSED | %s | "
+        "samples=%d | first=%s | last=%s",
+        key,
+        processed,
+        samples[0]["observed_at"],
+        samples[-1]["observed_at"],
+    )
+
+    return processed
 
 def run_once(log: logging.Logger, *, strict: bool = False) -> int:
     manifest = load_manifest()
@@ -1319,12 +2502,29 @@ def run_once(log: logging.Logger, *, strict: bool = False) -> int:
                 if snapshot is None:
                     log.warning("No central DB sample available | %s", key)
                     continue
-                process_snapshot(conn, log, key, meta, snapshot)
+                process_resolved_history(
+                    conn,
+                    monitor_conn,
+                    log,
+                    key,
+                    meta,
+                    snapshot,
+                )
                 conn.commit()
             except Exception:
                 failures += 1
                 conn.rollback()
                 log.exception("Policy processing failed | %s", key)
+        # All carrier alarm-state transactions above have already been
+        # committed independently. SMTP delivery is deliberately outside those
+        # transactions so an SMTP outage can never roll back alarm state.
+        try:
+            deliver_pending_emails(conn, log)
+        except Exception:
+            failures += 1
+            conn.rollback()
+            log.exception("Email outbox processing failed")
+
     if strict and failures:
         raise RuntimeError(f"{failures} alarm-policy processing failure(s)")
     return failures
