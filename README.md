@@ -354,3 +354,32 @@ docs/CURRENT_STATUS.md
 ```
 
 The repository and its documentation together form the engineering checkpoint for continued development, maintenance and deployment of the WISI GT34 monitoring system.
+
+## V11.5 - Adaptive WISI + Wellav Multisource Monitoring
+
+V11.5 extends TV43 monitoring to adaptive cross-vendor monitoring of both WISI Tangram GT34 and Wellav CMP201 IRDs.
+
+### Key changes
+
+- Continuous Wellav CMP201 acquisition across six CR2-DVBS2CI-00 modules.
+- Dedicated Wellav input, service and poll-run SQLite tables.
+- Source-neutral carrier routing and sequential cursors.
+- Automatic authoritative-source resolution between WISI and Wellav.
+- Stable administrative carrier identity across physical IRD migrations.
+- Historical route tracking for WISI <-> Wellav migrations.
+- Automatic future WISI-to-Wellav and Wellav-to-WISI route changes.
+- Disabled/stale Wellav slot data is excluded from current-route detection.
+- Established disabled/deleted inputs remain valid DOWN evidence when no replacement route exists.
+- Temporary telemetry uncertainty does not create false transmission outages.
+- Existing WISI history, PID, elementary-stream and NULL-payload monitoring is preserved.
+- Wellav observations use the existing alarm persistence engine.
+- Persistence remains 20s carrier unlock, 15s other DOWN, 20s WISI NULL-only payload, 10s recovery, 8s continuity-gap limit.
+- Production commissioning validated all 43 carriers: 33 WISI, 10 Wellav, 0 ambiguous, 0 unavailable.
+
+### Wellav configuration
+
+The repository does not contain the production Wellav API token.
+
+Set the environment variable before running the collector:
+
+WELLAV_API_TOKEN=<your local Wellav API token>

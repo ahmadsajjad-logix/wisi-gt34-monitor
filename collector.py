@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sqlite3
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from config import DATABASE_PATH, WISI_CHASSIS
+from config import DATABASE_PATH, WELLAV_CMP201, WISI_CHASSIS
 from parsers import (
     parse_pidmapper,
     parse_pcr_inputs,
@@ -29,6 +32,13 @@ CONTINUOUS_LOG_PATH = LOG_DIR / "collector_continuous.log"
 DYNAMIC_MAPPING_EVIDENCE_PATH = LOG_DIR / "dynamic_mapping_evidence.jsonl"
 DYNAMIC_MAPPING_RESOURCE = "tsio/inputs_conf.xmlc"
 TUNER_CONFIG_RESOURCE = "tuner.xmlc"
+
+
+# Wellav CMP201 read-only acquisition endpoints.
+WELLAV_API_TOKEN = os.getenv("WELLAV_API_TOKEN", "")
+WELLAV_CONFIG_ENDPOINT = "GetSubboardParam.w"
+WELLAV_STATUS_ENDPOINT = "GetInputTSStatus.w"
+WELLAV_HTTP_TIMEOUT_SECONDS = 5.0
 
 
 def configure_continuous_logging() -> logging.Logger:
@@ -154,6 +164,151 @@ def ensure_dynamic_mapping_schema(conn: sqlite3.Connection) -> None:
         ON tuner_config_samples(module_id, tuner_object_id, sampled_at);
         """
     )
+    conn.commit()
+
+
+
+def ensure_wellav_schema(
+    conn: sqlite3.Connection,
+) -> None:
+    """Create additive Wellav CMP201 acquisition tables.
+
+    These tables are intentionally separate from the existing WISI tuner,
+    transport-stream and service tables. No existing production table is
+    altered or dropped.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS wellav_input_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            sampled_at TEXT NOT NULL,
+
+            module_number INTEGER NOT NULL,
+            module_ip TEXT NOT NULL,
+
+            port INTEGER NOT NULL,
+            channel INTEGER NOT NULL,
+            ui_channel TEXT NOT NULL,
+
+            enabled INTEGER,
+
+            satellite_frequency_mhz REAL,
+            symbol_rate_kbaud REAL,
+            lnb_frequency_mhz REAL,
+            lnb_power_support INTEGER,
+            lnb_22khz INTEGER,
+
+            lock_status INTEGER,
+
+            total_bitrate_bps REAL,
+            effective_bitrate_bps REAL,
+
+            rf_level_dbm REAL,
+            cn_raw REAL,
+            cn_db REAL,
+
+            packet_error_rate REAL,
+            ber_count REAL,
+            ber_exponent REAL,
+
+            signal_type TEXT,
+            frequency_tune REAL,
+            link_margin REAL,
+            fec_code_rate TEXT,
+            modulation TEXT,
+
+            program_count INTEGER,
+
+            UNIQUE(
+                module_ip,
+                sampled_at,
+                port,
+                channel
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_wellav_input_samples_route_time
+        ON wellav_input_samples(
+            module_ip,
+            port,
+            channel,
+            sampled_at
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_wellav_input_samples_rf_time
+        ON wellav_input_samples(
+            satellite_frequency_mhz,
+            symbol_rate_kbaud,
+            sampled_at
+        );
+
+
+        CREATE TABLE IF NOT EXISTS wellav_service_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            sampled_at TEXT NOT NULL,
+
+            module_number INTEGER NOT NULL,
+            module_ip TEXT NOT NULL,
+
+            port INTEGER NOT NULL,
+            channel INTEGER NOT NULL,
+            ui_channel TEXT NOT NULL,
+
+            service_id INTEGER NOT NULL,
+            service_name TEXT,
+
+            UNIQUE(
+                module_ip,
+                sampled_at,
+                port,
+                channel,
+                service_id
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_wellav_service_samples_route_time
+        ON wellav_service_samples(
+            module_ip,
+            port,
+            channel,
+            sampled_at
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_wellav_service_samples_sid_time
+        ON wellav_service_samples(
+            service_id,
+            sampled_at
+        );
+
+
+        CREATE TABLE IF NOT EXISTS wellav_poll_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+
+            success INTEGER NOT NULL,
+
+            duration_seconds REAL,
+
+            modules_attempted INTEGER NOT NULL,
+            modules_succeeded INTEGER NOT NULL,
+
+            error_message TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_wellav_poll_runs_started
+        ON wellav_poll_runs(started_at);
+        """
+    )
+
     conn.commit()
 
 
@@ -1134,6 +1289,526 @@ def fetch_chassis_snapshots(
     }
 
 
+
+def wellav_read_api(
+    ip: str,
+    endpoint: str,
+) -> dict[str, Any]:
+    """Read one verified Wellav CMP201 JSON endpoint.
+
+    The CMP201 web interface labels these requests as form-urlencoded, but the
+    request body is raw JSON. This function performs read-only HTTP POSTs only.
+    It never calls a Set*/Apply*/Clear* endpoint.
+    """
+    allowed = {
+        WELLAV_CONFIG_ENDPOINT,
+        WELLAV_STATUS_ENDPOINT,
+    }
+
+    if endpoint not in allowed:
+        raise ValueError(
+            f"Unsupported/non-read-only Wellav endpoint: {endpoint}"
+        )
+
+    chassis_type = int(WELLAV_CMP201["chassis_type"])
+
+    if not WELLAV_API_TOKEN:
+        raise RuntimeError(
+            "WELLAV_API_TOKEN environment variable is not configured"
+        )
+
+    body = json.dumps(
+        {
+            "token": WELLAV_API_TOKEN,
+            "chassistype": chassis_type,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    url = f"http://{ip}/ajax/{endpoint}"
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept":
+                "application/json, text/javascript, */*; q=0.01",
+            "Content-Type":
+                "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With":
+                "XMLHttpRequest",
+            "Origin": f"http://{ip}",
+            "Referer": f"http://{ip}/",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=WELLAV_HTTP_TIMEOUT_SECONDS,
+    ) as response:
+        raw = response.read().decode(
+            "utf-8",
+            errors="replace",
+        )
+
+    payload = json.loads(raw)
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Wellav {ip}/{endpoint} returned a non-object JSON response"
+        )
+
+    if payload.get("code") != 0:
+        raise RuntimeError(
+            f"Wellav {ip}/{endpoint} API error: "
+            f"code={payload.get('code')} "
+            f"description={payload.get('description')}"
+        )
+
+    data = payload.get("data")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Wellav {ip}/{endpoint} returned no valid data object"
+        )
+
+    return data
+
+
+def fetch_wellav_module_snapshot(
+    module_number: int,
+    module_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Fetch configuration and live status for one Wellav CMP201 module.
+
+    Network I/O only. No SQLite writes are performed here.
+    """
+    started = time.perf_counter()
+    ip = str(module_cfg["ip"])
+
+    try:
+        config = wellav_read_api(
+            ip,
+            WELLAV_CONFIG_ENDPOINT,
+        )
+
+        status = wellav_read_api(
+            ip,
+            WELLAV_STATUS_ENDPOINT,
+        )
+
+        return {
+            "ok": True,
+            "module_number": int(module_number),
+            "module_name": module_cfg.get("name"),
+            "ip": ip,
+            "elapsed_seconds": round(
+                time.perf_counter() - started,
+                3,
+            ),
+            "config": config,
+            "status": status,
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "module_number": int(module_number),
+            "module_name": module_cfg.get("name"),
+            "ip": ip,
+            "elapsed_seconds": round(
+                time.perf_counter() - started,
+                3,
+            ),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def fetch_wellav_snapshots() -> dict[int, dict[str, Any]]:
+    """Fetch all configured Wellav modules in parallel.
+
+    This is intentionally independent from collect_once() for initial
+    commissioning. Adding these functions does not change production polling.
+    """
+    modules = WELLAV_CMP201["modules"]
+
+    results: dict[int, dict[str, Any]] = {}
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(modules))
+    ) as executor:
+
+        futures = {
+            executor.submit(
+                fetch_wellav_module_snapshot,
+                module_number,
+                module_cfg,
+            ): module_number
+            for module_number, module_cfg in modules.items()
+        }
+
+        for future in as_completed(futures):
+            module_number = futures[future]
+
+            try:
+                results[module_number] = future.result()
+            except Exception as exc:
+                cfg = modules[module_number]
+
+                results[module_number] = {
+                    "ok": False,
+                    "module_number": module_number,
+                    "module_name": cfg.get("name"),
+                    "ip": cfg.get("ip"),
+                    "elapsed_seconds": 0.0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+    return results
+
+
+
+def _wellav_number(
+    value: Any,
+) -> float | None:
+    """Return a numeric Wellav field without inventing a value."""
+    if value is None or value == "":
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wellav_int(
+    value: Any,
+) -> int | None:
+    """Return an integer Wellav field without inventing a value."""
+    if value is None or value == "":
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def store_wellav_module_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    acquired: dict[str, Any],
+    sampled_at: str,
+) -> dict[str, int]:
+    """Store one successfully acquired Wellav CMP201 module snapshot.
+
+    Configuration/status rows are preserved for every physical input.
+
+    Program/service rows are written only when that input is currently:
+      - enabled,
+      - demodulator locked, and
+      - carrying a positive transport bitrate.
+
+    This prevents the CMP201's retained stale program lists on disabled or
+    unlocked slots from becoming current service-monitoring evidence.
+    """
+    if not acquired.get("ok"):
+        raise ValueError(
+            "Cannot store unsuccessful Wellav acquisition"
+        )
+
+    module_number = int(acquired["module_number"])
+    module_ip = str(acquired["ip"])
+
+    config = acquired.get("config") or {}
+    status = acquired.get("status") or {}
+
+    config_lookup: dict[
+        tuple[int, int],
+        dict[str, Any],
+    ] = {}
+
+    status_lookup: dict[
+        tuple[int, int],
+        dict[str, Any],
+    ] = {}
+
+    for port in config.get("portlist", []):
+        port_id = int(port["port"])
+
+        for channel in port.get("channellist", []):
+            channel_id = int(channel["channel"])
+
+            config_lookup[
+                (port_id, channel_id)
+            ] = channel
+
+    for port in status.get("portlist", []):
+        port_id = int(port["port"])
+
+        for channel in port.get("channellist", []):
+            channel_id = int(channel["channel"])
+
+            status_lookup[
+                (port_id, channel_id)
+            ] = channel
+
+    all_inputs = sorted(
+        set(config_lookup)
+        | set(status_lookup)
+    )
+
+    counts = {
+        "inputs": 0,
+        "services": 0,
+        "service_observation_inputs": 0,
+    }
+
+    for port_id, channel_id in all_inputs:
+
+        cfg = config_lookup.get(
+            (port_id, channel_id),
+            {},
+        )
+
+        live = status_lookup.get(
+            (port_id, channel_id),
+            {},
+        )
+
+        ui_channel = (
+            f"{port_id + 1}.{channel_id + 1}"
+        )
+
+        enabled = _wellav_int(
+            cfg.get("enable")
+        )
+
+        lock_status = _wellav_int(
+            live.get("lockstatus")
+        )
+
+        total_bitrate = _wellav_number(
+            live.get("totalbitrate")
+        )
+
+        programs = live.get("programlist")
+
+        if not isinstance(programs, list):
+            programs = []
+
+        # C/N has been verified against the Wellav UI as tenths of dB.
+        cn_raw = _wellav_number(
+            live.get("cn")
+        )
+
+        cn_db = (
+            cn_raw / 10.0
+            if cn_raw is not None
+            else None
+        )
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO wellav_input_samples(
+                sampled_at,
+                module_number,
+                module_ip,
+                port,
+                channel,
+                ui_channel,
+                enabled,
+                satellite_frequency_mhz,
+                symbol_rate_kbaud,
+                lnb_frequency_mhz,
+                lnb_power_support,
+                lnb_22khz,
+                lock_status,
+                total_bitrate_bps,
+                effective_bitrate_bps,
+                rf_level_dbm,
+                cn_raw,
+                cn_db,
+                packet_error_rate,
+                ber_count,
+                ber_exponent,
+                signal_type,
+                frequency_tune,
+                link_margin,
+                fec_code_rate,
+                modulation,
+                program_count
+            )
+            VALUES(
+                ?,?,?,?,?,?,
+                ?,?,?,?,?,?,
+                ?,?,?,?,?,?,
+                ?,?,?,?,?,?,
+                ?,?,?
+            )
+            """,
+            (
+                sampled_at,
+                module_number,
+                module_ip,
+                port_id,
+                channel_id,
+                ui_channel,
+
+                enabled,
+
+                _wellav_number(
+                    cfg.get("satellitefrequency")
+                ),
+
+                _wellav_number(
+                    cfg.get("symbolrate")
+                ),
+
+                _wellav_number(
+                    cfg.get("lnbfrequency")
+                ),
+
+                _wellav_int(
+                    cfg.get("lnbpowersupport")
+                ),
+
+                _wellav_int(
+                    cfg.get("lnb22khz")
+                ),
+
+                lock_status,
+
+                total_bitrate,
+
+                _wellav_number(
+                    live.get("effectivebitrate")
+                ),
+
+                _wellav_number(
+                    live.get("rflevel")
+                ),
+
+                cn_raw,
+                cn_db,
+
+                _wellav_number(
+                    live.get("packeterrorrate")
+                ),
+
+                _wellav_number(
+                    live.get("bercnt")
+                ),
+
+                _wellav_number(
+                    live.get("berexponent")
+                ),
+
+                (
+                    None
+                    if live.get("signaltype") is None
+                    else str(live.get("signaltype"))
+                ),
+
+                _wellav_number(
+                    live.get("frequencytune")
+                ),
+
+                _wellav_number(
+                    live.get("linkmargin")
+                ),
+
+                (
+                    None
+                    if live.get("feccoderate") is None
+                    else str(live.get("feccoderate"))
+                ),
+
+                (
+                    None
+                    if live.get("modulation") is None
+                    else str(live.get("modulation"))
+                ),
+
+                len(programs),
+            ),
+        )
+
+        counts["inputs"] += 1
+
+        service_observation_available = (
+            enabled == 1
+            and lock_status == 1
+            and total_bitrate is not None
+            and total_bitrate > 0
+            and len(programs) > 0
+        )
+
+        if not service_observation_available:
+            continue
+
+        counts[
+            "service_observation_inputs"
+        ] += 1
+
+        seen_service_ids: set[int] = set()
+
+        for program in programs:
+
+            service_id = _wellav_int(
+                program.get("serviceid")
+            )
+
+            if service_id is None:
+                continue
+
+            # Do not let malformed duplicate entries violate the
+            # per-sample UNIQUE constraint.
+            if service_id in seen_service_ids:
+                continue
+
+            seen_service_ids.add(
+                service_id
+            )
+
+            service_name = str(
+                program.get("servicename")
+                or ""
+            ).strip()
+
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO wellav_service_samples(
+                    sampled_at,
+                    module_number,
+                    module_ip,
+                    port,
+                    channel,
+                    ui_channel,
+                    service_id,
+                    service_name
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    sampled_at,
+                    module_number,
+                    module_ip,
+                    port_id,
+                    channel_id,
+                    ui_channel,
+                    service_id,
+                    service_name,
+                ),
+            )
+
+            counts["services"] += 1
+
+    return counts
+
+
 def collect_once() -> dict[str, Any]:
     """Run one controlled poll cycle.
 
@@ -1148,6 +1823,13 @@ def collect_once() -> dict[str, Any]:
     modules_succeeded = 0
     error_messages: list[str] = []
     module_results: dict[str, dict[str, Any]] = {}
+
+    # Wellav accounting is deliberately separate from the established WISI
+    # poll_runs/success semantics.
+    wellav_modules_attempted = len(WELLAV_CMP201["modules"])
+    wellav_modules_succeeded = 0
+    wellav_error_messages: list[str] = []
+    wellav_module_results: dict[str, dict[str, Any]] = {}
 
     # Phase 1: WISI network acquisition only, four chassis in parallel.
     chassis_results: dict[str, dict[str, Any]] = {}
@@ -1170,9 +1852,18 @@ def collect_once() -> dict[str, Any]:
                     "modules": {},
                 }
 
+    # Phase 1B: Wellav CMP201 network acquisition only.
+    #
+    # This remains independent from WISI acquisition. Failure of Wellav
+    # telemetry must not invalidate successfully acquired WISI observations.
+    wellav_started_at = utc_now()
+    wellav_started_perf = time.perf_counter()
+    wellav_results = fetch_wellav_snapshots()
+
     # Phase 2: one main-thread SQLite writer.
     with open_db() as conn:
         ensure_dynamic_mapping_schema(conn)
+        ensure_wellav_schema(conn)
         verify_schema(conn)
         module_ids = ensure_equipment(conn, started_at)
 
@@ -1184,6 +1875,158 @@ def collect_once() -> dict[str, Any]:
             (started_at, modules_attempted),
         )
         poll_run_id = int(poll_cursor.lastrowid)
+        conn.commit()
+
+        # Store one coherent Wellav timestamp across all six modules in this
+        # collector cycle. Each successful module commits independently.
+        wellav_sampled_at = utc_now()
+
+        for module_number, module_cfg in WELLAV_CMP201["modules"].items():
+            key = (
+                f"{WELLAV_CMP201['baseboard_ip']}"
+                f"/M{module_number}"
+            )
+
+            acquired = wellav_results.get(module_number)
+
+            if not acquired:
+                msg = (
+                    f"Wellav Module {module_number} "
+                    f"({module_cfg['ip']}): "
+                    f"no acquisition result returned"
+                )
+
+                wellav_error_messages.append(msg)
+
+                wellav_module_results[key] = {
+                    "ok": False,
+                    "module_number": module_number,
+                    "module_ip": module_cfg["ip"],
+                    "error": msg,
+                }
+
+                continue
+
+            if not acquired.get("ok"):
+                msg = (
+                    f"Wellav Module {module_number} "
+                    f"({module_cfg['ip']}): "
+                    f"{acquired.get('error', 'acquisition failed')}"
+                )
+
+                wellav_error_messages.append(msg)
+
+                wellav_module_results[key] = {
+                    "ok": False,
+                    "module_number": module_number,
+                    "module_ip": module_cfg["ip"],
+                    "elapsed_seconds":
+                        acquired.get("elapsed_seconds", 0.0),
+                    "error": msg,
+                }
+
+                continue
+
+            savepoint = f"wellav_module_{module_number}"
+
+            conn.execute(
+                f"SAVEPOINT {savepoint}"
+            )
+
+            try:
+                counts = store_wellav_module_snapshot(
+                    conn,
+                    acquired=acquired,
+                    sampled_at=wellav_sampled_at,
+                )
+
+                conn.execute(
+                    f"RELEASE SAVEPOINT {savepoint}"
+                )
+
+                conn.commit()
+
+                wellav_modules_succeeded += 1
+
+                wellav_module_results[key] = {
+                    "ok": True,
+                    "module_number": module_number,
+                    "module_ip": module_cfg["ip"],
+                    "elapsed_seconds":
+                        acquired.get("elapsed_seconds", 0.0),
+                    "committed": True,
+                    **counts,
+                }
+
+            except Exception as exc:
+                conn.execute(
+                    f"ROLLBACK TO SAVEPOINT {savepoint}"
+                )
+
+                conn.execute(
+                    f"RELEASE SAVEPOINT {savepoint}"
+                )
+
+                conn.commit()
+
+                msg = (
+                    f"Wellav Module {module_number} "
+                    f"({module_cfg['ip']}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+                wellav_error_messages.append(msg)
+
+                wellav_module_results[key] = {
+                    "ok": False,
+                    "module_number": module_number,
+                    "module_ip": module_cfg["ip"],
+                    "elapsed_seconds":
+                        acquired.get("elapsed_seconds", 0.0),
+                    "committed": False,
+                    "error": msg,
+                }
+
+        wellav_completed_at = utc_now()
+
+        wellav_duration = round(
+            time.perf_counter() - wellav_started_perf,
+            3,
+        )
+
+        wellav_success = (
+            wellav_modules_succeeded
+            == wellav_modules_attempted
+        )
+
+        conn.execute(
+            """
+            INSERT INTO wellav_poll_runs(
+                started_at,
+                completed_at,
+                success,
+                duration_seconds,
+                modules_attempted,
+                modules_succeeded,
+                error_message
+            )
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                wellav_started_at,
+                wellav_completed_at,
+                1 if wellav_success else 0,
+                wellav_duration,
+                wellav_modules_attempted,
+                wellav_modules_succeeded,
+                (
+                    "\n".join(wellav_error_messages)
+                    if wellav_error_messages
+                    else None
+                ),
+            ),
+        )
+
         conn.commit()
 
         for host, chassis_cfg in WISI_CHASSIS.items():
@@ -1440,6 +2283,17 @@ def collect_once() -> dict[str, Any]:
         "modules_succeeded": modules_succeeded,
         "modules": module_results,
         "errors": error_messages,
+        "wellav": {
+            "started_at": wellav_started_at,
+            "completed_at": wellav_completed_at,
+            "sampled_at": wellav_sampled_at,
+            "success": wellav_success,
+            "duration_seconds": wellav_duration,
+            "modules_attempted": wellav_modules_attempted,
+            "modules_succeeded": wellav_modules_succeeded,
+            "modules": wellav_module_results,
+            "errors": wellav_error_messages,
+        },
     }
 
 

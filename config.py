@@ -36,3 +36,45 @@ RESOURCE_TS_FLUX = "tsio/inputs_conf_flux.xmlc"
 RESOURCE_PIDMAPPER = "tsio/pidmapper.xmlc"
 RESOURCE_PCR = "tsio/input_regulator/inputs.xmlc"
 RESOURCE_TSDB_INPUT = "tsdb/input.xmlc"
+
+# ---------------------------------------------------------------------------
+# Wellav CMP201
+# ---------------------------------------------------------------------------
+# Baseboard / management chassis: 192.168.3.177
+#
+# Each CR2-DVBS2CI-00 module has its own directly reachable IP address.
+# These addresses are acquisition topology only; administrative TV43 carrier
+# identities remain defined independently in the existing TV43 configuration.
+#
+# No username/password is stored here.
+WELLAV_CMP201 = {
+    "name": "Wellav CMP201",
+    "baseboard_ip": "192.168.3.177",
+    "chassis_type": 1,
+    "modules": {
+        1: {
+            "name": "CR2-DVBS2CI-00 Module 1",
+            "ip": "192.168.3.176",
+        },
+        2: {
+            "name": "CR2-DVBS2CI-00 Module 2",
+            "ip": "192.168.3.175",
+        },
+        3: {
+            "name": "CR2-DVBS2CI-00 Module 3",
+            "ip": "192.168.3.174",
+        },
+        4: {
+            "name": "CR2-DVBS2CI-00 Module 4",
+            "ip": "192.168.3.173",
+        },
+        5: {
+            "name": "CR2-DVBS2CI-00 Module 5",
+            "ip": "192.168.3.172",
+        },
+        6: {
+            "name": "CR2-DVBS2CI-00 Module 6",
+            "ip": "192.168.3.171",
+        },
+    },
+}

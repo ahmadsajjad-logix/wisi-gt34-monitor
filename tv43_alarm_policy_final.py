@@ -284,6 +284,98 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+def ensure_multisource_schema(
+    conn: sqlite3.Connection,
+) -> None:
+    """Create additive source-neutral routing/cursor state.
+
+    The existing carrier_sample_cursor table is intentionally left untouched.
+    It remains available for rollback and for controlled migration of existing
+    WISI cursor state.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS carrier_source_cursor (
+            carrier_key TEXT PRIMARY KEY,
+
+            source_type TEXT NOT NULL,
+            source_route_key TEXT NOT NULL,
+
+            last_processed_sampled_at TEXT NOT NULL,
+
+            configured_tuner_db_id INTEGER,
+            resolved_tuner_db_id INTEGER,
+
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_carrier_source_cursor_source
+        ON carrier_source_cursor(
+            source_type,
+            source_route_key
+        );
+
+
+        CREATE TABLE IF NOT EXISTS carrier_source_route (
+            carrier_key TEXT PRIMARY KEY,
+
+            source_type TEXT NOT NULL,
+            source_route_key TEXT NOT NULL,
+
+            source_details_json TEXT NOT NULL,
+            identity_method TEXT NOT NULL,
+
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_carrier_source_route_source
+        ON carrier_source_route(
+            source_type,
+            source_route_key
+        );
+
+
+        CREATE TABLE IF NOT EXISTS carrier_source_route_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            carrier_key TEXT NOT NULL,
+
+            source_type TEXT NOT NULL,
+            source_route_key TEXT NOT NULL,
+
+            source_details_json TEXT NOT NULL,
+            identity_method TEXT NOT NULL,
+
+            valid_from TEXT NOT NULL,
+            valid_to TEXT,
+
+            change_reason TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_carrier_source_route_history_carrier
+        ON carrier_source_route_history(
+            carrier_key,
+            valid_from
+        );
+
+        CREATE INDEX IF NOT EXISTS
+        idx_carrier_source_route_history_active
+        ON carrier_source_route_history(
+            carrier_key,
+            valid_to
+        );
+        """
+    )
+
+    conn.commit()
+
+
 def _load_carrier_metadata() -> dict[str, dict[str, Any]]:
     if not METADATA_FILE.exists():
         raise FileNotFoundError(f"TV43 carrier metadata missing: {METADATA_FILE}")
@@ -404,6 +496,698 @@ def _monitoring_path_unavailable(
         "configured_input_id": configured_input_id,
         "resolved_tuner_object_id": tuner_object_id,
         "configured_name": configured_name, "configured_uuid": configured_uuid,
+    }
+
+
+
+def read_latest_complete_wellav_cycle_at(
+    monitor_conn: sqlite3.Connection,
+) -> str | None:
+    """Return the newest complete six-module / 24-input Wellav cycle.
+
+    A partial acquisition is monitoring uncertainty. It must never make a
+    missing module or input appear to be a transmission outage.
+    """
+    row = monitor_conn.execute(
+        """
+        SELECT
+            sampled_at,
+            COUNT(*) AS input_rows,
+            COUNT(DISTINCT module_ip) AS module_count
+        FROM wellav_input_samples
+        GROUP BY sampled_at
+        HAVING COUNT(*)=24
+           AND COUNT(DISTINCT module_ip)=6
+        ORDER BY sampled_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    return str(row["sampled_at"])
+
+
+def _wellav_route_key(
+    module_ip: str,
+    port: int,
+    channel: int,
+) -> str:
+    return (
+        f"WELLAV|{module_ip}|"
+        f"P{int(port)}|C{int(channel)}"
+    )
+
+
+def _wellav_route_parts(
+    route_key: str,
+) -> tuple[str, int, int]:
+    parts = str(route_key).split("|")
+
+    if (
+        len(parts) != 4
+        or parts[0] != "WELLAV"
+        or not parts[2].startswith("P")
+        or not parts[3].startswith("C")
+    ):
+        raise ValueError(
+            f"Invalid Wellav route key: {route_key}"
+        )
+
+    return (
+        parts[1],
+        int(parts[2][1:]),
+        int(parts[3][1:]),
+    )
+
+
+def read_enabled_wellav_candidates(
+    monitor_conn: sqlite3.Connection,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> list[dict[str, Any]]:
+    """Find currently ENABLED Wellav inputs matching one admin RF identity.
+
+    Disabled Wellav slots are deliberately excluded here because CMP201 retains
+    the old frequency/symbol-rate/program configuration after a channel is
+    removed. A disabled retained configuration is historical evidence, not a
+    current route.
+
+    Frequency + symbol rate is the cross-vendor RF identity. Expected SID/name
+    matches are retained as verification evidence but are not required during
+    an RF unlock, because service enumeration is unavailable then.
+    """
+    sampled_at = read_latest_complete_wellav_cycle_at(
+        monitor_conn
+    )
+
+    if sampled_at is None:
+        return []
+
+    key = (
+        f"{meta['host']}|"
+        f"M{int(meta['module'])}"
+        f"C{int(meta['channel'])}"
+    )
+
+    target_frequency = float(
+        meta["frequency_mhz"]
+    )
+
+    target_symbol_rate_kbaud = (
+        float(meta["symbol_rate_mbd"])
+        * 1000.0
+    )
+
+    rows = monitor_conn.execute(
+        """
+        SELECT *
+        FROM wellav_input_samples
+        WHERE sampled_at=?
+          AND enabled=1
+          AND ABS(satellite_frequency_mhz-?)<=?
+          AND ABS(symbol_rate_kbaud-?)<=?
+        ORDER BY module_number,port,channel
+        """,
+        (
+            sampled_at,
+            target_frequency,
+            RF_FREQUENCY_TOLERANCE_MHZ,
+            target_symbol_rate_kbaud,
+            RF_SYMBOL_RATE_TOLERANCE_MBD
+                * 1000.0,
+        ),
+    ).fetchall()
+
+    expected = {
+        int(sid): str(name)
+        for sid, name
+        in expected_services[key]
+    }
+
+    result: list[dict[str, Any]] = []
+
+    for row in rows:
+
+        service_rows = monitor_conn.execute(
+            """
+            SELECT
+                service_id,
+                service_name
+            FROM wellav_service_samples
+            WHERE sampled_at=?
+              AND module_ip=?
+              AND port=?
+              AND channel=?
+            ORDER BY service_id
+            """,
+            (
+                sampled_at,
+                row["module_ip"],
+                int(row["port"]),
+                int(row["channel"]),
+            ),
+        ).fetchall()
+
+        observed = {
+            int(service["service_id"]):
+                str(service["service_name"] or "")
+            for service in service_rows
+        }
+
+        sid_matches = sorted(
+            set(expected)
+            & set(observed)
+        )
+
+        exact_name_matches = sorted(
+            sid
+            for sid in sid_matches
+            if (
+                _identity_name(expected[sid])
+                == _identity_name(observed[sid])
+            )
+        )
+
+        result.append(
+            {
+                "sampled_at": sampled_at,
+                "source_type": "WELLAV",
+                "source_route_key":
+                    _wellav_route_key(
+                        str(row["module_ip"]),
+                        int(row["port"]),
+                        int(row["channel"]),
+                    ),
+                "module_number":
+                    int(row["module_number"]),
+                "module_ip":
+                    str(row["module_ip"]),
+                "port":
+                    int(row["port"]),
+                "channel":
+                    int(row["channel"]),
+                "ui_channel":
+                    str(row["ui_channel"]),
+                "enabled":
+                    int(row["enabled"] or 0),
+                "lock_status":
+                    int(row["lock_status"] or 0),
+                "total_bitrate_bps":
+                    row["total_bitrate_bps"],
+                "sid_matches":
+                    sid_matches,
+                "exact_name_matches":
+                    exact_name_matches,
+                "observed_services":
+                    observed,
+            }
+        )
+
+    return result
+
+
+def read_wellav_route_snapshot(
+    monitor_conn: sqlite3.Connection,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+    source_route_key: str,
+) -> dict[str, Any]:
+    """Normalize one established Wellav route into the policy snapshot contract.
+
+    The route itself remains meaningful when disabled or unlocked. That is
+    required so an established Wellav input can produce authoritative
+    input_disabled or carrier_unlocked evidence instead of disappearing from
+    monitoring merely because it is faulty.
+    """
+    key = (
+        f"{meta['host']}|"
+        f"M{int(meta['module'])}"
+        f"C{int(meta['channel'])}"
+    )
+
+    expected = expected_services[key]
+
+    expected_rows = [
+        {
+            "sid": int(sid),
+            "name": str(name),
+        }
+        for sid, name in expected
+    ]
+
+    sampled_at = read_latest_complete_wellav_cycle_at(
+        monitor_conn
+    )
+
+    if sampled_at is None:
+        return _monitoring_path_unavailable(
+            meta,
+            expected_rows,
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+        )
+
+    module_ip, port, channel = (
+        _wellav_route_parts(
+            source_route_key
+        )
+    )
+
+    row = monitor_conn.execute(
+        """
+        SELECT *
+        FROM wellav_input_samples
+        WHERE sampled_at=?
+          AND module_ip=?
+          AND port=?
+          AND channel=?
+        LIMIT 1
+        """,
+        (
+            sampled_at,
+            module_ip,
+            port,
+            channel,
+        ),
+    ).fetchone()
+
+    if row is None:
+        return _monitoring_path_unavailable(
+            meta,
+            expected_rows,
+            sampled_at,
+        )
+
+    frequency = row[
+        "satellite_frequency_mhz"
+    ]
+
+    symbol_rate = row[
+        "symbol_rate_kbaud"
+    ]
+
+    rf_identity_matches = (
+        frequency is not None
+        and symbol_rate is not None
+        and abs(
+            float(frequency)
+            - float(meta["frequency_mhz"])
+        )
+        <= RF_FREQUENCY_TOLERANCE_MHZ
+        and abs(
+            float(symbol_rate)
+            - (
+                float(meta["symbol_rate_mbd"])
+                * 1000.0
+            )
+        )
+        <= (
+            RF_SYMBOL_RATE_TOLERANCE_MBD
+            * 1000.0
+        )
+    )
+
+    if not rf_identity_matches:
+        return {
+            "host": meta["host"],
+            "module": int(meta["module"]),
+            "channel": int(meta["channel"]),
+            "observed_at": sampled_at,
+            "execution_error": None,
+            "expected_path_absent": True,
+            "channels": {},
+            "expected_services": expected_rows,
+            "missing_services": [],
+            "es_missing_services": [],
+            "service_observation_available": False,
+            "source": "central_sqlite_wellav",
+            "source_type": "WELLAV",
+            "source_route_key": source_route_key,
+        }
+
+    enabled = int(
+        row["enabled"] or 0
+    )
+
+    lock_status = int(
+        row["lock_status"] or 0
+    )
+
+    bitrate = row[
+        "total_bitrate_bps"
+    ]
+
+    ts_present = (
+        bitrate is not None
+        and float(bitrate) > 0
+    )
+
+    service_rows = monitor_conn.execute(
+        """
+        SELECT
+            service_id,
+            service_name
+        FROM wellav_service_samples
+        WHERE sampled_at=?
+          AND module_ip=?
+          AND port=?
+          AND channel=?
+        ORDER BY service_id
+        """,
+        (
+            sampled_at,
+            module_ip,
+            port,
+            channel,
+        ),
+    ).fetchall()
+
+    current_services = {
+        int(service["service_id"]):
+            str(
+                service["service_name"]
+                or f"SID {service['service_id']}"
+            )
+        for service in service_rows
+    }
+
+    # Conservative service authority:
+    # carrier enabled + locked + TS present + at least one current service row.
+    #
+    # An empty program enumeration is not converted into "all services DOWN"
+    # because that would manufacture service-level evidence from uncertainty.
+    service_observation_available = (
+        enabled == 1
+        and lock_status == 1
+        and ts_present
+        and bool(service_rows)
+    )
+
+    missing = (
+        [
+            {
+                "sid": int(sid),
+                "name": str(name),
+            }
+            for sid, name in expected
+            if int(sid)
+                not in current_services
+        ]
+        if service_observation_available
+        else []
+    )
+
+    return {
+        # Administrative identity remains unchanged.
+        "host": meta["host"],
+        "module": int(meta["module"]),
+        "channel": int(meta["channel"]),
+
+        "observed_at": sampled_at,
+
+        "execution_error": None,
+        "expected_path_absent": False,
+
+        "channels": {
+            "Demod Lock":
+                lock_status,
+
+            "Transport Stream Present":
+                1 if ts_present else 0,
+
+            "Input Enabled":
+                enabled,
+
+            "Input State":
+                None,
+
+            "Input Disabled":
+                0 if enabled == 1 else 1,
+        },
+
+        "expected_services":
+            expected_rows,
+
+        "missing_services":
+            missing,
+
+        # CMP201 endpoint currently used by production collection does not
+        # expose authoritative elementary-stream counts.
+        "es_missing_services":
+            [],
+
+        "service_observation_available":
+            service_observation_available,
+
+        # No PID-level evidence is currently available from this Wellav path,
+        # therefore NULL-only payload must never be inferred.
+        "null_payload_only":
+            False,
+
+        "source":
+            "central_sqlite_wellav",
+
+        "source_type":
+            "WELLAV",
+
+        "source_route_key":
+            source_route_key,
+
+        "wellav_module":
+            int(row["module_number"]),
+
+        "wellav_module_ip":
+            str(row["module_ip"]),
+
+        "wellav_port":
+            int(row["port"]),
+
+        "wellav_channel":
+            int(row["channel"]),
+
+        "wellav_ui_channel":
+            str(row["ui_channel"]),
+
+        "rf_level_dbm":
+            row["rf_level_dbm"],
+
+        "cn_db":
+            row["cn_db"],
+
+        "total_bitrate_bps":
+            bitrate,
+    }
+
+
+def wisi_snapshot_is_currently_configured(
+    snapshot: dict[str, Any] | None,
+) -> bool:
+    """Return whether a resolved WISI identity is currently configured ON.
+
+    A disabled retained WISI configuration is not a competing active route.
+    It remains useful only as last-known-route evidence when no replacement
+    source has been established.
+    """
+    if snapshot is None:
+        return False
+
+    if snapshot.get("execution_error"):
+        return False
+
+    ch = dict(
+        snapshot.get("channels")
+        or {}
+    )
+
+    enabled = ch.get(
+        "Input Enabled"
+    )
+
+    disabled = ch.get(
+        "Input Disabled"
+    )
+
+    if (
+        enabled is not None
+        and int(enabled or 0) == 0
+    ):
+        return False
+
+    if (
+        disabled is not None
+        and int(disabled or 0) == 1
+    ):
+        return False
+
+    # The live WISI relationship was resolved and no affirmative OFF/disabled
+    # evidence is present.
+    return True
+
+
+def resolve_current_source_preview(
+    monitor_conn: sqlite3.Connection,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> dict[str, Any]:
+    """READ-ONLY commissioning resolver.
+
+    This function is deliberately not connected to run_once(). It exists only
+    to prove the cross-vendor selection rules before route state is committed.
+    """
+    wisi = read_monitor_snapshot(
+        monitor_conn,
+        meta,
+        expected_services,
+    )
+
+    wisi_identity_resolved = (
+        wisi is not None
+        and wisi.get(
+            "execution_error"
+        ) is None
+    )
+
+    wisi_configured = (
+        wisi_snapshot_is_currently_configured(
+            wisi
+        )
+    )
+
+    wellav_candidates = (
+        read_enabled_wellav_candidates(
+            monitor_conn,
+            meta,
+            expected_services,
+        )
+    )
+
+    if len(wellav_candidates) > 1:
+        return {
+            "status":
+                "AMBIGUOUS_WELLAV",
+            "source_type":
+                None,
+            "snapshot":
+                None,
+            "wisi_snapshot":
+                wisi,
+            "wellav_candidates":
+                wellav_candidates,
+        }
+
+    if (
+        len(wellav_candidates) == 1
+        and wisi_configured
+    ):
+        return {
+            "status":
+                "AMBIGUOUS_ACTIVE_SOURCES",
+            "source_type":
+                None,
+            "snapshot":
+                None,
+            "wisi_snapshot":
+                wisi,
+            "wellav_candidates":
+                wellav_candidates,
+        }
+
+    if len(wellav_candidates) == 1:
+        candidate = (
+            wellav_candidates[0]
+        )
+
+        snapshot = (
+            read_wellav_route_snapshot(
+                monitor_conn,
+                meta,
+                expected_services,
+                candidate[
+                    "source_route_key"
+                ],
+            )
+        )
+
+        return {
+            "status":
+                "RESOLVED",
+            "source_type":
+                "WELLAV",
+            "source_route_key":
+                candidate[
+                    "source_route_key"
+                ],
+            "identity_method":
+                "RF_SR_UNIQUE"
+                "+EXPECTED_SERVICE_VERIFY",
+            "snapshot":
+                snapshot,
+            "wisi_snapshot":
+                wisi,
+            "wellav_candidates":
+                wellav_candidates,
+        }
+
+    if wisi_identity_resolved:
+        configured_db_id = (
+            wisi.get(
+                "configured_tuner_db_id"
+            )
+        )
+
+        resolved_db_id = (
+            wisi.get(
+                "resolved_tuner_db_id"
+            )
+        )
+
+        source_route_key = (
+            "WISI|"
+            f"{wisi.get('live_module_db_id')}|"
+            f"{configured_db_id}|"
+            f"{resolved_db_id}"
+        )
+
+        return {
+            "status":
+                "RESOLVED",
+            "source_type":
+                "WISI",
+            "source_route_key":
+                source_route_key,
+            "identity_method":
+                "RF_POL_SR_DYNAMIC_MAPPING",
+            "snapshot":
+                wisi,
+            "wisi_snapshot":
+                wisi,
+            "wellav_candidates":
+                [],
+        }
+
+    return {
+        "status":
+            "MONITORING_PATH_UNAVAILABLE",
+        "source_type":
+            None,
+        "snapshot":
+            None,
+        "wisi_snapshot":
+            wisi,
+        "wellav_candidates":
+            [],
     }
 
 
@@ -2200,6 +2984,652 @@ def process_snapshot(
         )
 
 
+
+def get_carrier_source_cursor(
+    conn: sqlite3.Connection,
+    carrier_key: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            carrier_key,
+            source_type,
+            source_route_key,
+            last_processed_sampled_at,
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            updated_at
+        FROM carrier_source_cursor
+        WHERE carrier_key=?
+        """,
+        (carrier_key,),
+    ).fetchone()
+
+
+def set_carrier_source_cursor(
+    conn: sqlite3.Connection,
+    *,
+    carrier_key: str,
+    source_type: str,
+    source_route_key: str,
+    sampled_at: datetime,
+    configured_tuner_db_id: int | None = None,
+    resolved_tuner_db_id: int | None = None,
+) -> None:
+    now = utcnow().isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO carrier_source_cursor(
+            carrier_key,
+            source_type,
+            source_route_key,
+            last_processed_sampled_at,
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            updated_at
+        )
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(carrier_key) DO UPDATE SET
+            source_type=excluded.source_type,
+            source_route_key=excluded.source_route_key,
+            last_processed_sampled_at=
+                excluded.last_processed_sampled_at,
+            configured_tuner_db_id=
+                excluded.configured_tuner_db_id,
+            resolved_tuner_db_id=
+                excluded.resolved_tuner_db_id,
+            updated_at=excluded.updated_at
+        """,
+        (
+            carrier_key,
+            str(source_type),
+            str(source_route_key),
+            sampled_at.isoformat(),
+            configured_tuner_db_id,
+            resolved_tuner_db_id,
+            now,
+        ),
+    )
+
+
+def get_carrier_source_route(
+    conn: sqlite3.Connection,
+    carrier_key: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            carrier_key,
+            source_type,
+            source_route_key,
+            source_details_json,
+            identity_method,
+            first_seen_at,
+            last_seen_at,
+            updated_at
+        FROM carrier_source_route
+        WHERE carrier_key=?
+        """,
+        (carrier_key,),
+    ).fetchone()
+
+
+def read_wellav_route_sample_history(
+    monitor_conn: sqlite3.Connection,
+    *,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+    source_route_key: str,
+    after_sampled_at: datetime,
+    until_sampled_at: datetime,
+) -> list[dict[str, Any]]:
+    """Reconstruct sequential Wellav observations for one established route.
+
+    Only collector cycles containing all 24 inputs from all six Wellav modules
+    are eligible. A partial acquisition therefore creates a telemetry gap and
+    cannot accidentally contribute to DOWN or UP persistence.
+    """
+    key = (
+        f"{meta['host']}|"
+        f"M{int(meta['module'])}"
+        f"C{int(meta['channel'])}"
+    )
+
+    expected = expected_services[key]
+
+    expected_rows = [
+        {
+            "sid": int(sid),
+            "name": str(name),
+        }
+        for sid, name in expected
+    ]
+
+    module_ip, port, channel = (
+        _wellav_route_parts(
+            source_route_key
+        )
+    )
+
+    rows = monitor_conn.execute(
+        """
+        WITH complete_cycles AS (
+            SELECT sampled_at
+            FROM wellav_input_samples
+            WHERE sampled_at>?
+              AND sampled_at<=?
+            GROUP BY sampled_at
+            HAVING COUNT(*)=24
+               AND COUNT(DISTINCT module_ip)=6
+        )
+        SELECT w.*
+        FROM wellav_input_samples AS w
+        JOIN complete_cycles AS c
+          ON c.sampled_at=w.sampled_at
+        WHERE w.module_ip=?
+          AND w.port=?
+          AND w.channel=?
+        ORDER BY w.sampled_at,w.id
+        """,
+        (
+            after_sampled_at.isoformat(),
+            until_sampled_at.isoformat(),
+            module_ip,
+            int(port),
+            int(channel),
+        ),
+    ).fetchall()
+
+    result: list[dict[str, Any]] = []
+
+    for row in rows:
+
+        sampled_at = str(
+            row["sampled_at"]
+        )
+
+        frequency = row[
+            "satellite_frequency_mhz"
+        ]
+
+        symbol_rate = row[
+            "symbol_rate_kbaud"
+        ]
+
+        rf_identity_matches = (
+            frequency is not None
+            and symbol_rate is not None
+            and abs(
+                float(frequency)
+                - float(meta["frequency_mhz"])
+            )
+            <= RF_FREQUENCY_TOLERANCE_MHZ
+            and abs(
+                float(symbol_rate)
+                - (
+                    float(meta["symbol_rate_mbd"])
+                    * 1000.0
+                )
+            )
+            <= (
+                RF_SYMBOL_RATE_TOLERANCE_MBD
+                * 1000.0
+            )
+        )
+
+        if not rf_identity_matches:
+            result.append(
+                {
+                    "host": meta["host"],
+                    "module": int(meta["module"]),
+                    "channel": int(meta["channel"]),
+                    "observed_at": sampled_at,
+                    "execution_error": None,
+                    "expected_path_absent": True,
+                    "channels": {},
+                    "expected_services":
+                        expected_rows,
+                    "missing_services": [],
+                    "es_missing_services": [],
+                    "service_observation_available":
+                        False,
+                    "null_payload_only": False,
+                    "source":
+                        "central_sqlite_wellav",
+                    "source_type": "WELLAV",
+                    "source_route_key":
+                        source_route_key,
+                }
+            )
+
+            continue
+
+        enabled = int(
+            row["enabled"] or 0
+        )
+
+        lock_status = int(
+            row["lock_status"] or 0
+        )
+
+        bitrate = row[
+            "total_bitrate_bps"
+        ]
+
+        ts_present = (
+            bitrate is not None
+            and float(bitrate) > 0
+        )
+
+        service_rows = monitor_conn.execute(
+            """
+            SELECT
+                service_id,
+                service_name
+            FROM wellav_service_samples
+            WHERE sampled_at=?
+              AND module_ip=?
+              AND port=?
+              AND channel=?
+            ORDER BY service_id
+            """,
+            (
+                sampled_at,
+                module_ip,
+                int(port),
+                int(channel),
+            ),
+        ).fetchall()
+
+        current_services = {
+            int(service["service_id"]):
+                str(
+                    service["service_name"]
+                    or f"SID {service['service_id']}"
+                )
+            for service in service_rows
+        }
+
+        service_observation_available = (
+            enabled == 1
+            and lock_status == 1
+            and ts_present
+            and bool(service_rows)
+        )
+
+        missing = (
+            [
+                {
+                    "sid": int(sid),
+                    "name": str(name),
+                }
+                for sid, name in expected
+                if int(sid)
+                    not in current_services
+            ]
+            if service_observation_available
+            else []
+        )
+
+        result.append(
+            {
+                "host": meta["host"],
+                "module": int(meta["module"]),
+                "channel": int(meta["channel"]),
+
+                "observed_at":
+                    sampled_at,
+
+                "execution_error":
+                    None,
+
+                "expected_path_absent":
+                    False,
+
+                "channels": {
+                    "Demod Lock":
+                        lock_status,
+
+                    "Transport Stream Present":
+                        1 if ts_present else 0,
+
+                    "Input Enabled":
+                        enabled,
+
+                    "Input State":
+                        None,
+
+                    "Input Disabled":
+                        0 if enabled == 1 else 1,
+                },
+
+                "expected_services":
+                    expected_rows,
+
+                "missing_services":
+                    missing,
+
+                "es_missing_services":
+                    [],
+
+                "service_observation_available":
+                    service_observation_available,
+
+                "null_payload_only":
+                    False,
+
+                "source":
+                    "central_sqlite_wellav",
+
+                "source_type":
+                    "WELLAV",
+
+                "source_route_key":
+                    source_route_key,
+
+                "wellav_module":
+                    int(row["module_number"]),
+
+                "wellav_module_ip":
+                    str(row["module_ip"]),
+
+                "wellav_port":
+                    int(row["port"]),
+
+                "wellav_channel":
+                    int(row["channel"]),
+
+                "wellav_ui_channel":
+                    str(row["ui_channel"]),
+
+                "rf_level_dbm":
+                    row["rf_level_dbm"],
+
+                "cn_db":
+                    row["cn_db"],
+
+                "total_bitrate_bps":
+                    bitrate,
+            }
+        )
+
+    return result
+
+
+
+def build_multisource_commissioning_plan(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    manifest: dict[str, dict[str, Any]],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> list[dict[str, Any]]:
+    """Build the initial multisource state without writing anything.
+
+    Current WISI carriers inherit their existing proven sequential cursor.
+
+    Current Wellav carriers bootstrap at the newest authoritative Wellav
+    observation. Historical WISI/unknown periods are deliberately not replayed
+    through the new source, because doing so could manufacture synthetic
+    outage/recovery transitions during commissioning.
+
+    Existing active episodes on a carrier that is being commissioned onto
+    Wellav are reported for explicit administrative reconciliation. This
+    function itself never modifies those episodes.
+    """
+    plan: list[dict[str, Any]] = []
+
+    for key, meta in manifest.items():
+
+        resolution = (
+            resolve_current_source_preview(
+                monitor_conn,
+                meta,
+                expected_services,
+            )
+        )
+
+        if (
+            resolution.get("status")
+            != "RESOLVED"
+        ):
+            raise RuntimeError(
+                f"Cannot commission {key}: "
+                f"resolver status="
+                f"{resolution.get('status')}"
+            )
+
+        source_type = str(
+            resolution["source_type"]
+        )
+
+        source_route_key = str(
+            resolution[
+                "source_route_key"
+            ]
+        )
+
+        snapshot = resolution.get(
+            "snapshot"
+        )
+
+        if snapshot is None:
+            raise RuntimeError(
+                f"Cannot commission {key}: "
+                f"resolved source has no snapshot"
+            )
+
+        observed_at = parse_dt(
+            str(snapshot["observed_at"])
+        )
+
+        configured_tuner_db_id = None
+        resolved_tuner_db_id = None
+
+        if source_type == "WISI":
+
+            legacy = (
+                get_carrier_sample_cursor(
+                    conn,
+                    key,
+                )
+            )
+
+            if legacy is None:
+                raise RuntimeError(
+                    f"Cannot commission {key}: "
+                    f"current WISI carrier has "
+                    f"no legacy cursor"
+                )
+
+            cursor_at = parse_dt(
+                str(
+                    legacy[
+                        "last_processed_sampled_at"
+                    ]
+                )
+            )
+
+            configured_tuner_db_id = (
+                legacy[
+                    "configured_tuner_db_id"
+                ]
+            )
+
+            resolved_tuner_db_id = (
+                legacy[
+                    "resolved_tuner_db_id"
+                ]
+            )
+
+            cursor_origin = (
+                "LEGACY_WISI_CURSOR"
+            )
+
+        elif source_type == "WELLAV":
+
+            # Start at the current authoritative observation.
+            # The next runtime pass will consume only newer Wellav samples.
+            cursor_at = observed_at
+
+            cursor_origin = (
+                "WELLAV_CURRENT_BOOTSTRAP"
+            )
+
+        else:
+            raise RuntimeError(
+                f"Unsupported source type "
+                f"{source_type!r} for {key}"
+            )
+
+        active_rows = conn.execute(
+            """
+            SELECT
+                event_key,
+                condition_kind,
+                started_at,
+                last_seen_at,
+                status_line
+            FROM alert_episode
+            WHERE host=?
+              AND module=?
+              AND channel=?
+              AND active=1
+            ORDER BY started_at,event_key
+            """,
+            (
+                meta["host"],
+                int(meta["module"]),
+                int(meta["channel"]),
+            ),
+        ).fetchall()
+
+        # Only source-migrated Wellav carriers require commissioning
+        # reconciliation of legacy episodes. Existing WISI carrier episodes
+        # remain ordinary live alarm state and must not be touched.
+        reconcile = []
+
+        if source_type == "WELLAV":
+            reconcile = [
+                {
+                    "event_key":
+                        str(row["event_key"]),
+                    "condition_kind":
+                        str(row["condition_kind"]),
+                    "started_at":
+                        str(row["started_at"]),
+                    "last_seen_at":
+                        str(row["last_seen_at"]),
+                    "status_line":
+                        str(row["status_line"]),
+                }
+                for row in active_rows
+            ]
+
+        source_details: dict[str, Any]
+
+        if source_type == "WISI":
+            source_details = {
+                "live_module":
+                    snapshot.get(
+                        "live_module"
+                    ),
+                "live_module_db_id":
+                    snapshot.get(
+                        "live_module_db_id"
+                    ),
+                "configured_input_id":
+                    snapshot.get(
+                        "configured_input_id"
+                    ),
+                "configured_tuner_db_id":
+                    snapshot.get(
+                        "configured_tuner_db_id"
+                    ),
+                "resolved_tuner_db_id":
+                    snapshot.get(
+                        "resolved_tuner_db_id"
+                    ),
+                "configured_name":
+                    snapshot.get(
+                        "configured_name"
+                    ),
+            }
+
+        else:
+            source_details = {
+                "wellav_module":
+                    snapshot.get(
+                        "wellav_module"
+                    ),
+                "wellav_module_ip":
+                    snapshot.get(
+                        "wellav_module_ip"
+                    ),
+                "wellav_port":
+                    snapshot.get(
+                        "wellav_port"
+                    ),
+                "wellav_channel":
+                    snapshot.get(
+                        "wellav_channel"
+                    ),
+                "wellav_ui_channel":
+                    snapshot.get(
+                        "wellav_ui_channel"
+                    ),
+            }
+
+        plan.append(
+            {
+                "carrier_key":
+                    key,
+
+                "source_type":
+                    source_type,
+
+                "source_route_key":
+                    source_route_key,
+
+                "identity_method":
+                    str(
+                        resolution[
+                            "identity_method"
+                        ]
+                    ),
+
+                "source_details":
+                    source_details,
+
+                "snapshot_observed_at":
+                    observed_at.isoformat(),
+
+                "cursor_at":
+                    cursor_at.isoformat(),
+
+                "cursor_origin":
+                    cursor_origin,
+
+                "configured_tuner_db_id":
+                    configured_tuner_db_id,
+
+                "resolved_tuner_db_id":
+                    resolved_tuner_db_id,
+
+                "reconcile_active_episodes":
+                    reconcile,
+            }
+        )
+
+    return plan
+
+
 def process_resolved_history(
     conn: sqlite3.Connection,
     monitor_conn: sqlite3.Connection,
@@ -2489,46 +3919,1143 @@ def process_resolved_history(
 
     return processed
 
+
+def _wisi_source_route_key(
+    snapshot: dict[str, Any] | None,
+) -> str | None:
+    if snapshot is None:
+        return None
+
+    if snapshot.get("execution_error"):
+        return None
+
+    live_module_db_id = snapshot.get(
+        "live_module_db_id"
+    )
+    configured_db_id = snapshot.get(
+        "configured_tuner_db_id"
+    )
+    resolved_db_id = snapshot.get(
+        "resolved_tuner_db_id"
+    )
+
+    if (
+        live_module_db_id is None
+        or configured_db_id is None
+        or resolved_db_id is None
+    ):
+        return None
+
+    return (
+        "WISI|"
+        f"{int(live_module_db_id)}|"
+        f"{int(configured_db_id)}|"
+        f"{int(resolved_db_id)}"
+    )
+
+
+def _source_details_from_snapshot(
+    source_type: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+
+    if source_type == "WISI":
+        return {
+            "live_module":
+                snapshot.get("live_module"),
+            "live_module_db_id":
+                snapshot.get("live_module_db_id"),
+            "configured_input_id":
+                snapshot.get("configured_input_id"),
+            "configured_tuner_db_id":
+                snapshot.get("configured_tuner_db_id"),
+            "resolved_tuner_db_id":
+                snapshot.get("resolved_tuner_db_id"),
+            "configured_name":
+                snapshot.get("configured_name"),
+        }
+
+    return {
+        "wellav_module":
+            snapshot.get("wellav_module"),
+        "wellav_module_ip":
+            snapshot.get("wellav_module_ip"),
+        "wellav_port":
+            snapshot.get("wellav_port"),
+        "wellav_channel":
+            snapshot.get("wellav_channel"),
+        "wellav_ui_channel":
+            snapshot.get("wellav_ui_channel"),
+    }
+
+
+def set_carrier_source_route(
+    conn: sqlite3.Connection,
+    *,
+    carrier_key: str,
+    source_type: str,
+    source_route_key: str,
+    source_details: dict[str, Any],
+    identity_method: str,
+    observed_at: datetime,
+    change_reason: str,
+) -> bool:
+    """Upsert current route and preserve route history.
+
+    Returns True only when the physical/source route changed.
+    """
+    current = get_carrier_source_route(
+        conn,
+        carrier_key,
+    )
+
+    now = utcnow().isoformat()
+    observed_text = observed_at.isoformat()
+
+    details_json = json.dumps(
+        source_details,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    changed = (
+        current is None
+        or str(current["source_type"])
+            != source_type
+        or str(current["source_route_key"])
+            != source_route_key
+    )
+
+    if current is None:
+
+        conn.execute(
+            """
+            INSERT INTO carrier_source_route(
+                carrier_key,
+                source_type,
+                source_route_key,
+                source_details_json,
+                identity_method,
+                first_seen_at,
+                last_seen_at,
+                updated_at
+            )
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                carrier_key,
+                source_type,
+                source_route_key,
+                details_json,
+                identity_method,
+                observed_text,
+                observed_text,
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO carrier_source_route_history(
+                carrier_key,
+                source_type,
+                source_route_key,
+                source_details_json,
+                identity_method,
+                valid_from,
+                valid_to,
+                change_reason
+            )
+            VALUES(?,?,?,?,?,?,NULL,?)
+            """,
+            (
+                carrier_key,
+                source_type,
+                source_route_key,
+                details_json,
+                identity_method,
+                observed_text,
+                change_reason,
+            ),
+        )
+
+        return True
+
+    if changed:
+
+        conn.execute(
+            """
+            UPDATE carrier_source_route_history
+            SET valid_to=?
+            WHERE carrier_key=?
+              AND valid_to IS NULL
+            """,
+            (
+                observed_text,
+                carrier_key,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO carrier_source_route_history(
+                carrier_key,
+                source_type,
+                source_route_key,
+                source_details_json,
+                identity_method,
+                valid_from,
+                valid_to,
+                change_reason
+            )
+            VALUES(?,?,?,?,?,?,NULL,?)
+            """,
+            (
+                carrier_key,
+                source_type,
+                source_route_key,
+                details_json,
+                identity_method,
+                observed_text,
+                change_reason,
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE carrier_source_route
+            SET source_type=?,
+                source_route_key=?,
+                source_details_json=?,
+                identity_method=?,
+                first_seen_at=?,
+                last_seen_at=?,
+                updated_at=?
+            WHERE carrier_key=?
+            """,
+            (
+                source_type,
+                source_route_key,
+                details_json,
+                identity_method,
+                observed_text,
+                observed_text,
+                now,
+                carrier_key,
+            ),
+        )
+
+        return True
+
+    conn.execute(
+        """
+        UPDATE carrier_source_route
+        SET source_details_json=?,
+            identity_method=?,
+            last_seen_at=?,
+            updated_at=?
+        WHERE carrier_key=?
+        """,
+        (
+            details_json,
+            identity_method,
+            observed_text,
+            now,
+            carrier_key,
+        ),
+    )
+
+    return False
+
+
+def commission_multisource_state(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    manifest: dict[str, dict[str, Any]],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> dict[str, int]:
+    """One-time controlled commissioning.
+
+    No alert-history rows or recovery emails are generated for legacy
+    WISI-only episodes belonging to carriers already migrated to Wellav.
+    """
+    ensure_multisource_schema(conn)
+
+    existing = sum(
+        int(
+            conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+        )
+        for table in (
+            "carrier_source_cursor",
+            "carrier_source_route",
+            "carrier_source_route_history",
+        )
+    )
+
+    if existing:
+        raise RuntimeError(
+            "Multisource state is already commissioned"
+        )
+
+    plan = build_multisource_commissioning_plan(
+        conn,
+        monitor_conn,
+        manifest,
+        expected_services,
+    )
+
+    if len(plan) != len(manifest):
+        raise RuntimeError(
+            "Commissioning plan is incomplete"
+        )
+
+    reconciled = 0
+
+    for item in plan:
+
+        carrier_key = str(
+            item["carrier_key"]
+        )
+
+        source_type = str(
+            item["source_type"]
+        )
+
+        route_key = str(
+            item["source_route_key"]
+        )
+
+        cursor_at = parse_dt(
+            str(item["cursor_at"])
+        )
+
+        snapshot_at = parse_dt(
+            str(item["snapshot_observed_at"])
+        )
+
+        set_carrier_source_cursor(
+            conn,
+            carrier_key=carrier_key,
+            source_type=source_type,
+            source_route_key=route_key,
+            sampled_at=cursor_at,
+            configured_tuner_db_id=
+                item.get(
+                    "configured_tuner_db_id"
+                ),
+            resolved_tuner_db_id=
+                item.get(
+                    "resolved_tuner_db_id"
+                ),
+        )
+
+        set_carrier_source_route(
+            conn,
+            carrier_key=carrier_key,
+            source_type=source_type,
+            source_route_key=route_key,
+            source_details=dict(
+                item["source_details"]
+            ),
+            identity_method=str(
+                item["identity_method"]
+            ),
+            observed_at=snapshot_at,
+            change_reason=
+                "INITIAL_MULTISOURCE_COMMISSIONING",
+        )
+
+        for episode in item[
+            "reconcile_active_episodes"
+        ]:
+            event_key = str(
+                episode["event_key"]
+            )
+
+            conn.execute(
+                """
+                UPDATE alert_episode
+                SET active=0,
+                    cleared_at=?,
+                    last_seen_at=?
+                WHERE event_key=?
+                  AND active=1
+                """,
+                (
+                    snapshot_at.isoformat(),
+                    snapshot_at.isoformat(),
+                    event_key,
+                ),
+            )
+
+            _clear_candidate(
+                conn,
+                event_key,
+            )
+
+            reconciled += 1
+
+    return {
+        "carriers":
+            len(plan),
+        "reconciled_legacy_episodes":
+            reconciled,
+    }
+
+
+def resolve_authoritative_source_runtime(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> dict[str, Any]:
+    """Resolve current authority while respecting the last-known route."""
+
+    key = (
+        f"{meta['host']}|"
+        f"M{int(meta['module'])}"
+        f"C{int(meta['channel'])}"
+    )
+
+    current = get_carrier_source_route(
+        conn,
+        key,
+    )
+
+    if current is None:
+        return resolve_current_source_preview(
+            monitor_conn,
+            meta,
+            expected_services,
+        )
+
+    current_type = str(
+        current["source_type"]
+    )
+
+    current_route_key = str(
+        current["source_route_key"]
+    )
+
+    wisi = read_monitor_snapshot(
+        monitor_conn,
+        meta,
+        expected_services,
+    )
+
+    wisi_route_key = (
+        _wisi_source_route_key(
+            wisi
+        )
+    )
+
+    wisi_configured = (
+        wisi_snapshot_is_currently_configured(
+            wisi
+        )
+    )
+
+    latest_wellav = (
+        read_latest_complete_wellav_cycle_at(
+            monitor_conn
+        )
+    )
+
+    wellav_fresh = False
+
+    if latest_wellav is not None:
+        wellav_fresh = (
+            utcnow()
+            - parse_dt(latest_wellav)
+        ).total_seconds() <= SNAPSHOT_STALE_SECONDS
+
+    wellav_candidates = (
+        read_enabled_wellav_candidates(
+            monitor_conn,
+            meta,
+            expected_services,
+        )
+        if wellav_fresh
+        else []
+    )
+
+    # -------------------------------------------------------------
+    # Current authority = WISI
+    # -------------------------------------------------------------
+    if current_type == "WISI":
+
+        if (
+            wisi_configured
+            and wisi_route_key
+                == current_route_key
+        ):
+            return {
+                "status": "RESOLVED",
+                "source_type": "WISI",
+                "source_route_key":
+                    current_route_key,
+                "identity_method":
+                    "RF_POL_SR_DYNAMIC_MAPPING",
+                "snapshot": wisi,
+            }
+
+        replacement_count = (
+            (1 if wisi_configured else 0)
+            + len(wellav_candidates)
+        )
+
+        if replacement_count > 1:
+            return {
+                "status":
+                    "AMBIGUOUS_ACTIVE_SOURCES",
+                "source_type": None,
+                "snapshot": None,
+            }
+
+        if len(wellav_candidates) == 1:
+            candidate = (
+                wellav_candidates[0]
+            )
+
+            route_key = str(
+                candidate[
+                    "source_route_key"
+                ]
+            )
+
+            return {
+                "status": "RESOLVED",
+                "source_type": "WELLAV",
+                "source_route_key":
+                    route_key,
+                "identity_method":
+                    "RF_SR_UNIQUE"
+                    "+EXPECTED_SERVICE_VERIFY",
+                "snapshot":
+                    read_wellav_route_snapshot(
+                        monitor_conn,
+                        meta,
+                        expected_services,
+                        route_key,
+                    ),
+            }
+
+        if (
+            wisi_configured
+            and wisi_route_key is not None
+        ):
+            return {
+                "status": "RESOLVED",
+                "source_type": "WISI",
+                "source_route_key":
+                    wisi_route_key,
+                "identity_method":
+                    "RF_POL_SR_DYNAMIC_MAPPING",
+                "snapshot": wisi,
+            }
+
+        # No verified replacement exists. Keep the established WISI
+        # authority so disabled/deleted-path semantics remain observable.
+        return {
+            "status": "RESOLVED",
+            "source_type": "WISI",
+            "source_route_key":
+                current_route_key,
+            "identity_method":
+                str(
+                    current[
+                        "identity_method"
+                    ]
+                ),
+            "snapshot": wisi,
+        }
+
+    # -------------------------------------------------------------
+    # Current authority = WELLAV
+    # -------------------------------------------------------------
+    if current_type == "WELLAV":
+
+        current_snapshot = (
+            read_wellav_route_snapshot(
+                monitor_conn,
+                meta,
+                expected_services,
+                current_route_key,
+            )
+        )
+
+        ch = dict(
+            current_snapshot.get(
+                "channels"
+            )
+            or {}
+        )
+
+        current_configured = (
+            not current_snapshot.get(
+                "execution_error"
+            )
+            and not current_snapshot.get(
+                "expected_path_absent"
+            )
+            and ch.get(
+                "Input Enabled"
+            ) is not None
+            and int(
+                ch.get(
+                    "Input Enabled"
+                )
+                or 0
+            ) == 1
+        )
+
+        if current_configured:
+            return {
+                "status": "RESOLVED",
+                "source_type": "WELLAV",
+                "source_route_key":
+                    current_route_key,
+                "identity_method":
+                    str(
+                        current[
+                            "identity_method"
+                        ]
+                    ),
+                "snapshot":
+                    current_snapshot,
+            }
+
+        replacement_wellav = [
+            candidate
+            for candidate
+            in wellav_candidates
+            if str(
+                candidate[
+                    "source_route_key"
+                ]
+            ) != current_route_key
+        ]
+
+        replacement_count = (
+            len(replacement_wellav)
+            + (1 if wisi_configured else 0)
+        )
+
+        if replacement_count > 1:
+            return {
+                "status":
+                    "AMBIGUOUS_ACTIVE_SOURCES",
+                "source_type": None,
+                "snapshot": None,
+            }
+
+        if len(replacement_wellav) == 1:
+
+            candidate = (
+                replacement_wellav[0]
+            )
+
+            route_key = str(
+                candidate[
+                    "source_route_key"
+                ]
+            )
+
+            return {
+                "status": "RESOLVED",
+                "source_type": "WELLAV",
+                "source_route_key":
+                    route_key,
+                "identity_method":
+                    "RF_SR_UNIQUE"
+                    "+EXPECTED_SERVICE_VERIFY",
+                "snapshot":
+                    read_wellav_route_snapshot(
+                        monitor_conn,
+                        meta,
+                        expected_services,
+                        route_key,
+                    ),
+            }
+
+        if (
+            wisi_configured
+            and wisi_route_key is not None
+        ):
+            return {
+                "status": "RESOLVED",
+                "source_type": "WISI",
+                "source_route_key":
+                    wisi_route_key,
+                "identity_method":
+                    "RF_POL_SR_DYNAMIC_MAPPING",
+                "snapshot": wisi,
+            }
+
+        # No replacement: retain the established Wellav route.
+        # Its disabled/unlocked/changed-RF samples are affirmative fault
+        # evidence; stale telemetry remains protected by snapshot freshness.
+        return {
+            "status": "RESOLVED",
+            "source_type": "WELLAV",
+            "source_route_key":
+                current_route_key,
+            "identity_method":
+                str(
+                    current[
+                        "identity_method"
+                    ]
+                ),
+            "snapshot":
+                current_snapshot,
+        }
+
+    raise RuntimeError(
+        f"Unsupported current source type "
+        f"{current_type!r} for {key}"
+    )
+
+
+def process_wellav_resolved_history(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    log: logging.Logger,
+    key: str,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+    latest_snapshot: dict[str, Any],
+    source_route_key: str,
+) -> int:
+
+    cursor = get_carrier_source_cursor(
+        conn,
+        key,
+    )
+
+    latest_at = parse_dt(
+        str(
+            latest_snapshot[
+                "observed_at"
+            ]
+        )
+    )
+
+    if (
+        cursor is None
+        or str(cursor["source_type"])
+            != "WELLAV"
+        or str(cursor["source_route_key"])
+            != source_route_key
+    ):
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+        set_carrier_source_cursor(
+            conn,
+            carrier_key=key,
+            source_type="WELLAV",
+            source_route_key=
+                source_route_key,
+            sampled_at=latest_at,
+        )
+
+        return 0
+
+    after_at = parse_dt(
+        str(
+            cursor[
+                "last_processed_sampled_at"
+            ]
+        )
+    )
+
+    freshness_floor = (
+        latest_at
+        - timedelta(
+            seconds=
+                SNAPSHOT_STALE_SECONDS
+        )
+    )
+
+    if after_at < freshness_floor:
+        after_at = freshness_floor
+
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+    samples = (
+        read_wellav_route_sample_history(
+            monitor_conn,
+            meta=meta,
+            expected_services=
+                expected_services,
+            source_route_key=
+                source_route_key,
+            after_sampled_at=after_at,
+            until_sampled_at=
+                latest_at,
+        )
+    )
+
+    processed = 0
+
+    for sample in samples:
+
+        process_snapshot(
+            conn,
+            log,
+            key,
+            meta,
+            sample,
+        )
+
+        sample_at = parse_dt(
+            str(sample["observed_at"])
+        )
+
+        set_carrier_source_cursor(
+            conn,
+            carrier_key=key,
+            source_type="WELLAV",
+            source_route_key=
+                source_route_key,
+            sampled_at=sample_at,
+        )
+
+        processed += 1
+
+    return processed
+
+
+def process_multisource_carrier(
+    conn: sqlite3.Connection,
+    monitor_conn: sqlite3.Connection,
+    log: logging.Logger,
+    key: str,
+    meta: dict[str, Any],
+    expected_services: dict[
+        str,
+        tuple[tuple[int, str], ...],
+    ],
+) -> int:
+
+    resolution = (
+        resolve_authoritative_source_runtime(
+            conn,
+            monitor_conn,
+            meta,
+            expected_services,
+        )
+    )
+
+    if (
+        resolution.get("status")
+        != "RESOLVED"
+    ):
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+        log.warning(
+            "MULTISOURCE RESOLUTION UNCERTAIN | %s | status=%s",
+            key,
+            resolution.get("status"),
+        )
+
+        return 0
+
+    source_type = str(
+        resolution["source_type"]
+    )
+
+    route_key = str(
+        resolution[
+            "source_route_key"
+        ]
+    )
+
+    snapshot = resolution.get(
+        "snapshot"
+    )
+
+    if snapshot is None:
+        raise RuntimeError(
+            f"Resolved source has no snapshot: {key}"
+        )
+
+    observed_at = parse_dt(
+        str(snapshot["observed_at"])
+    )
+
+    current = get_carrier_source_route(
+        conn,
+        key,
+    )
+
+    route_changed = (
+        current is None
+        or str(current["source_type"])
+            != source_type
+        or str(current["source_route_key"])
+            != route_key
+    )
+
+    set_carrier_source_route(
+        conn,
+        carrier_key=key,
+        source_type=source_type,
+        source_route_key=route_key,
+        source_details=
+            _source_details_from_snapshot(
+                source_type,
+                snapshot,
+            ),
+        identity_method=str(
+            resolution[
+                "identity_method"
+            ]
+        ),
+        observed_at=observed_at,
+        change_reason=(
+            "AUTO_ROUTE_CHANGE"
+            if route_changed
+            else "ROUTE_REFRESH"
+        ),
+    )
+
+    if route_changed:
+
+        conn.execute(
+            """
+            DELETE FROM transition_candidate
+            WHERE event_key LIKE ?
+            """,
+            (f"{key}|%",),
+        )
+
+        if source_type == "WISI":
+
+            configured_db_id = (
+                snapshot.get(
+                    "configured_tuner_db_id"
+                )
+            )
+
+            resolved_db_id = (
+                snapshot.get(
+                    "resolved_tuner_db_id"
+                )
+            )
+
+            if (
+                configured_db_id is None
+                or resolved_db_id is None
+            ):
+                raise RuntimeError(
+                    f"New WISI route lacks tuner IDs: {key}"
+                )
+
+            set_carrier_sample_cursor(
+                conn,
+                carrier_key=key,
+                sampled_at=observed_at,
+                configured_tuner_db_id=
+                    int(configured_db_id),
+                resolved_tuner_db_id=
+                    int(resolved_db_id),
+            )
+
+            set_carrier_source_cursor(
+                conn,
+                carrier_key=key,
+                source_type="WISI",
+                source_route_key=
+                    route_key,
+                sampled_at=
+                    observed_at,
+                configured_tuner_db_id=
+                    int(configured_db_id),
+                resolved_tuner_db_id=
+                    int(resolved_db_id),
+            )
+
+        else:
+
+            set_carrier_source_cursor(
+                conn,
+                carrier_key=key,
+                source_type="WELLAV",
+                source_route_key=
+                    route_key,
+                sampled_at=
+                    observed_at,
+            )
+
+        log.warning(
+            "AUTHORITATIVE ROUTE CHANGED | %s | source=%s | route=%s",
+            key,
+            source_type,
+            route_key,
+        )
+
+        # Route-change bootstrap: never replay the previous source through
+        # the replacement source. Subsequent observations establish any
+        # DOWN or UP persistence normally.
+        return 0
+
+    if source_type == "WELLAV":
+
+        return process_wellav_resolved_history(
+            conn,
+            monitor_conn,
+            log,
+            key,
+            meta,
+            expected_services,
+            snapshot,
+            route_key,
+        )
+
+    processed = process_resolved_history(
+        conn,
+        monitor_conn,
+        log,
+        key,
+        meta,
+        snapshot,
+    )
+
+    legacy = get_carrier_sample_cursor(
+        conn,
+        key,
+    )
+
+    if legacy is not None:
+        set_carrier_source_cursor(
+            conn,
+            carrier_key=key,
+            source_type="WISI",
+            source_route_key=
+                route_key,
+            sampled_at=parse_dt(
+                str(
+                    legacy[
+                        "last_processed_sampled_at"
+                    ]
+                )
+            ),
+            configured_tuner_db_id=
+                legacy[
+                    "configured_tuner_db_id"
+                ],
+            resolved_tuner_db_id=
+                legacy[
+                    "resolved_tuner_db_id"
+                ],
+        )
+
+    return processed
+
+
 def run_once(log: logging.Logger, *, strict: bool = False) -> int:
     manifest = load_manifest()
     expected_services = load_expected_services()
-    validate_expected_services(manifest, expected_services)
+    validate_expected_services(
+        manifest,
+        expected_services,
+    )
+
     failures = 0
+
     with closing(open_db()) as conn, closing(open_monitor_db()) as monitor_conn:
+
         ensure_schema(conn)
+        ensure_multisource_schema(conn)
+
+        commissioned = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM carrier_source_route
+                """
+            ).fetchone()[0]
+        )
+
+        if commissioned != len(manifest):
+            raise RuntimeError(
+                "Multisource policy is not fully commissioned: "
+                f"{commissioned}/{len(manifest)} routes"
+            )
+
         for key, meta in manifest.items():
+
             try:
-                snapshot = read_monitor_snapshot(monitor_conn, meta, expected_services)
-                if snapshot is None:
-                    log.warning("No central DB sample available | %s", key)
-                    continue
-                process_resolved_history(
+                process_multisource_carrier(
                     conn,
                     monitor_conn,
                     log,
                     key,
                     meta,
-                    snapshot,
+                    expected_services,
                 )
+
                 conn.commit()
+
             except Exception:
                 failures += 1
                 conn.rollback()
-                log.exception("Policy processing failed | %s", key)
-        # All carrier alarm-state transactions above have already been
-        # committed independently. SMTP delivery is deliberately outside those
-        # transactions so an SMTP outage can never roll back alarm state.
+
+                log.exception(
+                    "Policy processing failed | %s",
+                    key,
+                )
+
+        # SMTP remains outside carrier state transactions.
         try:
-            deliver_pending_emails(conn, log)
+            deliver_pending_emails(
+                conn,
+                log,
+            )
+
         except Exception:
             failures += 1
             conn.rollback()
-            log.exception("Email outbox processing failed")
+
+            log.exception(
+                "Email outbox processing failed"
+            )
 
     if strict and failures:
-        raise RuntimeError(f"{failures} alarm-policy processing failure(s)")
-    return failures
+        raise RuntimeError(
+            f"{failures} alarm-policy processing failure(s)"
+        )
 
+    return failures
 
 
 def rearm_current_active_episodes(log: logging.Logger) -> int:
