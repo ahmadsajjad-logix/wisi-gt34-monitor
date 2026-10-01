@@ -184,8 +184,8 @@ The standard notification contains:
 - channel/service name;
 - satellite information;
 - frequency band;
-- `âŒ DOWN` state for alarm notifications;
-- `âœ… UP` state for recovery notifications;
+- `Ã¢ÂÅ’ DOWN` state for alarm notifications;
+- `Ã¢Å“â€¦ UP` state for recovery notifications;
 - total downtime on recovery;
 - PEMRA logo;
 - automated transmission-monitoring footer.
@@ -330,15 +330,32 @@ NULL-payload alarm.
 The current production system is frozen at release:
 
 ```text
-11.4-production-policy-hardening
+11.6-wisi-route-mcpc-notification-correction
 ```
 
-The Git commit containing this V11.4 release documentation and the corresponding production-source updates is the reference point for the presently deployed production implementation.
+Reference Git commit:
 
-Future changes must be incremental and evidence-driven. The established architecture, monitoring semantics, identity model, alarm policy, PRTG presentation model and security boundaries must not be redesigned or silently changed without explicit approval.
+```text
+caa54151bfee4d19745838b524dc4ef12940c8d0
+```
 
-Production troubleshooting should begin from this frozen checkpoint rather than reconstructing previously solved discovery, mapping, PRTG or alarm-policy work.
+This V11.6 checkpoint is the authoritative reference for the presently deployed production implementation.
 
+Production monitoring now uses adaptive multisource authority across WISI Tangram GT34 and Wellav CMP201 IRDs while preserving stable administrative carrier identity.
+
+Validated alarm timing remains:
+
+- 15-second DOWN persistence for standard transport-stream and individual-service failures;
+- 20-second DOWN persistence for sustained carrier unlock;
+- 20-second DOWN persistence for WISI NULL-only transport payload;
+- 10-second recovery persistence;
+- an observation gap greater than 8 seconds resets persistence continuity.
+
+V11.6 also corrects established-WISI route handling so a genuine RF unlock is not incorrectly converted into `expected_path_down`. It also introduces MCPC-aware grouped DOWN/UP notifications while preserving the existing SCPC notification format.
+
+Final V11.6 production activation passed with all 43 carrier routes and cursors present, zero new notifications in the isolated current-state dry run, and the Alarm Policy task successfully returned to Running.
+
+Future changes must remain incremental and evidence-driven. Production troubleshooting should begin from this V11.6 checkpoint rather than reconstructing previously solved discovery, mapping, multisource-routing, PRTG or alarm-policy work.
 ## Repository documentation
 
 Additional engineering and operational documentation is maintained under:
