@@ -1472,7 +1472,7 @@ def read_monitor_snapshot(
         else []
     )
 
-    return {
+    snapshot = {
         # Keep administrative module/channel stable for alarm/event identity.
         "host": meta["host"],
         "module": int(meta["module"]),
@@ -1501,6 +1501,7 @@ def read_monitor_snapshot(
         "live_module": live_module_number,
         "live_module_db_id": live_module_id,
     }
+    return resolve_wisi_duplicate_display_names(monitor_conn, snapshot)
 
 
 
@@ -1761,6 +1762,150 @@ def services(snapshot: dict[str, Any], field: str) -> tuple[tuple[int, str], ...
         result.append((int(row["sid"]), str(row["name"])))
     return tuple(result)
 
+
+
+def resolve_wisi_duplicate_display_names(
+    monitor_conn: sqlite3.Connection,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve duplicate incoming service names for presentation only.
+
+    Technical service identity remains SID. Only duplicate baseline names are
+    candidates for WISI output-name substitution. Mapping evidence must come
+    from the exact same collector observation timestamp; stale or ambiguous
+    evidence falls back to ``<incoming name> [SID n]``.
+    """
+    expected_rows = [
+        {
+            "sid": int(row["sid"]),
+            "name": str(row["name"]),
+        }
+        for row in (snapshot.get("expected_services") or [])
+    ]
+
+    if len(expected_rows) < 2:
+        return snapshot
+
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for row in expected_rows:
+        sid = int(row["sid"])
+        name = str(row["name"]).strip() or f"SID {sid}"
+        groups.setdefault(name.casefold(), []).append((sid, name))
+
+    duplicate_groups = {
+        key: rows
+        for key, rows in groups.items()
+        if len(rows) > 1
+    }
+
+    if not duplicate_groups:
+        return snapshot
+
+    module_id = snapshot.get("live_module_db_id")
+    configured_input_id = snapshot.get("configured_input_id")
+    observed_at = snapshot.get("observed_at")
+
+    aliases: dict[int, str] = {}
+
+    if (
+        module_id is not None
+        and configured_input_id is not None
+        and observed_at
+    ):
+        table_exists = monitor_conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type='table'
+              AND name='wisi_service_output_mapping_state'
+            """
+        ).fetchone()
+
+        if table_exists:
+            duplicate_sids = sorted(
+                sid
+                for rows in duplicate_groups.values()
+                for sid, _ in rows
+            )
+
+            placeholders = ",".join("?" for _ in duplicate_sids)
+            rows = monitor_conn.execute(
+                f"""
+                SELECT
+                    service_id,
+                    output_name
+                FROM wisi_service_output_mapping_state
+                WHERE module_id=?
+                  AND configured_input_id=?
+                  AND last_seen_at=?
+                  AND service_id IN ({placeholders})
+                ORDER BY service_id, output_name
+                """,
+                (
+                    int(module_id),
+                    int(configured_input_id),
+                    str(observed_at),
+                    *duplicate_sids,
+                ),
+            ).fetchall()
+
+            candidates: dict[int, set[str]] = {}
+            for row in rows:
+                sid = int(row["service_id"])
+                name = str(row["output_name"] or "").strip()
+                if name:
+                    candidates.setdefault(sid, set()).add(name)
+
+            for group_rows in duplicate_groups.values():
+                proposed: dict[int, str] = {}
+
+                for sid, _raw_name in group_rows:
+                    names = candidates.get(sid, set())
+                    if len(names) == 1:
+                        proposed[sid] = next(iter(names))
+
+                alias_counts: dict[str, int] = {}
+                for name in proposed.values():
+                    key = name.strip().casefold()
+                    alias_counts[key] = alias_counts.get(key, 0) + 1
+
+                for sid, name in proposed.items():
+                    if alias_counts.get(name.strip().casefold(), 0) == 1:
+                        aliases[sid] = name
+
+    display_names: dict[int, str] = {}
+
+    for group_rows in duplicate_groups.values():
+        for sid, raw_name in group_rows:
+            display_names[sid] = aliases.get(
+                sid,
+                f"{raw_name} [SID {sid}]",
+            )
+
+    if not display_names:
+        return snapshot
+
+    def _apply(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for row in rows or []:
+            sid = int(row["sid"])
+            copied = dict(row)
+            if sid in display_names:
+                copied["name"] = display_names[sid]
+            result.append(copied)
+        return result
+
+    resolved = dict(snapshot)
+    resolved["expected_services"] = _apply(
+        snapshot.get("expected_services")
+    )
+    resolved["missing_services"] = _apply(
+        snapshot.get("missing_services")
+    )
+    resolved["es_missing_services"] = _apply(
+        snapshot.get("es_missing_services")
+    )
+    return resolved
 
 def derive_conditions(snapshot: dict[str, Any]) -> list[Condition]:
     ch = dict(snapshot.get("channels") or {})

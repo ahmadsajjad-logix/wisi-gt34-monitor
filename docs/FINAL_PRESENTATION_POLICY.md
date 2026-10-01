@@ -6,7 +6,7 @@ Successful checkpoint: V11.3J
 - All authoritative services remain covered by service-integrity monitoring.
 - Critical RF/TS measurements remain PRTG channels.
 - Extra technical/service details remain in rich PRTG sensor status text.
-- Full observations remain in SQLite for 15 days.
+- Full observations remain in SQLite for 30 days.
 - Final alarm/email policy is unchanged.
 - Commissioning emails are not re-sent.
 

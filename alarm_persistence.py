@@ -49,7 +49,7 @@ def ensure_alarm_state_schema(
     Add only the current-state table required for stateful alarm suppression.
 
     Historical alarm/event records continue to use the existing
-    monitoring_events table and therefore inherit its existing 15-day
+    monitoring_events table and therefore inherit its existing 30-day
     retention policy.
     """
     conn.execute(

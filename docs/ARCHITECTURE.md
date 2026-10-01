@@ -10,7 +10,7 @@ Python evaluates carrier/TS/service integrity, persists episodes, suppresses dup
 One PRTG sensor represents one authoritative logical TV-bearing carrier. The numeric schema is frozen and capped at 44 channels. Rich overflow telemetry stays in status text and SQLite history.
 
 ## Retention
-TV43 carrier and service history is retained for 15 days.
+TV43 carrier and service history is retained for 30 days.
 
 ## Security
 Secrets, PRTG passhashes, production DBs and logs are operational state and are excluded from Git.

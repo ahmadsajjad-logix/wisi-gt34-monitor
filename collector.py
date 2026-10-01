@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import logging
-import os
 import sqlite3
 import time
 import urllib.request
@@ -32,6 +33,8 @@ CONTINUOUS_LOG_PATH = LOG_DIR / "collector_continuous.log"
 DYNAMIC_MAPPING_EVIDENCE_PATH = LOG_DIR / "dynamic_mapping_evidence.jsonl"
 DYNAMIC_MAPPING_RESOURCE = "tsio/inputs_conf.xmlc"
 TUNER_CONFIG_RESOURCE = "tuner.xmlc"
+OUTPUT_CONFIG_RESOURCE = "tsio/outputs_conf.xmlc"
+REMUX_CONFIG_RESOURCE = "remux/config.xmlc"
 
 
 # Wellav CMP201 read-only acquisition endpoints.
@@ -162,6 +165,27 @@ def ensure_dynamic_mapping_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_tuner_config_lookup
         ON tuner_config_samples(module_id, tuner_object_id, sampled_at);
+
+        CREATE TABLE IF NOT EXISTS wisi_service_output_mapping_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            module_id INTEGER NOT NULL,
+            configured_input_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            remux_instance_id INTEGER NOT NULL,
+            output_id INTEGER NOT NULL,
+            output_name TEXT NOT NULL,
+            output_type TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            UNIQUE(
+                module_id, configured_input_id, service_id,
+                remux_instance_id, output_id
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_wisi_service_output_mapping_lookup
+        ON wisi_service_output_mapping_state(
+            module_id, configured_input_id, service_id, last_seen_at
+        );
         """
     )
     conn.commit()
@@ -445,6 +469,81 @@ def parse_dynamic_input_relationships(xml_text: str) -> dict[int, dict[str, Any]
 
     return relationships
 
+
+
+def parse_wisi_service_output_mappings(
+    remux_xml_text: str,
+    outputs_xml_text: str,
+) -> list[dict[str, Any]]:
+    """Resolve WISI input SID -> remux instance -> visible enabled output.
+
+    This function does not deduplicate SIDs and does not guess names.
+    Multiple output-name rows are deliberately preserved so the policy can
+    fail safely if a SID maps to more than one distinct configured name.
+    """
+    outputs_root = ET.fromstring(outputs_xml_text)
+    remux_root = ET.fromstring(remux_xml_text)
+
+    remux_outputs: dict[int, list[dict[str, Any]]] = {}
+
+    for output in outputs_root.iter("output"):
+        output_id = _xml_int(output.get("id"))
+        enabled = _xml_int(output.get("enabled"))
+        hidden = _xml_int(output.get("hidden"))
+        source = output.find("source")
+
+        if output_id is None or source is None:
+            continue
+
+        source_type = _xml_int(source.get("type"))
+        remux_instance_id = _xml_int(source.get("id"))
+        output_name = _xml_text(output, "name")
+        output_type = _xml_text(output, "type")
+
+        if source_type != 2 or remux_instance_id is None:
+            continue
+        if enabled != 1 or hidden == 1:
+            continue
+        if not output_name:
+            continue
+
+        remux_outputs.setdefault(remux_instance_id, []).append(
+            {
+                "output_id": output_id,
+                "output_name": output_name,
+                "output_type": output_type,
+            }
+        )
+
+    rows: list[dict[str, Any]] = []
+
+    for remux in remux_root.iter("remux_instance"):
+        remux_instance_id = _xml_int(remux.get("id"))
+        if remux_instance_id is None:
+            continue
+
+        outputs = remux_outputs.get(remux_instance_id, [])
+        if not outputs:
+            continue
+
+        for service in remux.findall("./services/service"):
+            configured_input_id = _xml_int(service.get("input_id"))
+            service_id = _xml_int(service.get("input_sid"))
+
+            if configured_input_id is None or service_id is None:
+                continue
+
+            for output in outputs:
+                rows.append(
+                    {
+                        "configured_input_id": configured_input_id,
+                        "service_id": service_id,
+                        "remux_instance_id": remux_instance_id,
+                        **output,
+                    }
+                )
+
+    return rows
 
 def append_dynamic_mapping_evidence(records: list[dict[str, Any]]) -> None:
     """Append non-alarming relationship evidence to a JSONL sidecar log."""
@@ -1257,10 +1356,34 @@ def fetch_chassis_snapshots(
                     "error": f"{type(exc).__name__}: {exc}",
                 }
 
+
+            try:
+                snapshot["outputs_conf"] = client.get_resource(
+                    cfg["remote"], OUTPUT_CONFIG_RESOURCE
+                )
+            except Exception as exc:
+                snapshot["outputs_conf"] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+            try:
+                snapshot["remux_config"] = client.get_resource(
+                    cfg["remote"], REMUX_CONFIG_RESOURCE
+                )
+            except Exception as exc:
+                snapshot["remux_config"] = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
             failed = [
                 name
                 for name, result in snapshot.items()
-                if name not in {"dynamic_inputs_conf", "tuner_config"}
+                if name not in {
+                    "dynamic_inputs_conf", "tuner_config",
+                    "outputs_conf", "remux_config",
+                }
                 and not result.get("ok")
             ]
             if failed:
@@ -1311,11 +1434,6 @@ def wellav_read_api(
         )
 
     chassis_type = int(WELLAV_CMP201["chassis_type"])
-
-    if not WELLAV_API_TOKEN:
-        raise RuntimeError(
-            "WELLAV_API_TOKEN environment variable is not configured"
-        )
 
     body = json.dumps(
         {
@@ -2213,6 +2331,77 @@ def collect_once() -> dict[str, Any]:
                             mapping_result.get("error") or "resource unavailable"
                         )
 
+
+                    service_output_mapping_rows = 0
+                    service_output_mapping_error: str | None = None
+                    outputs_result = acquired["snapshot"].get("outputs_conf", {})
+                    remux_result = acquired["snapshot"].get("remux_config", {})
+
+                    if outputs_result.get("ok") and remux_result.get("ok"):
+                        service_output_rows = parse_wisi_service_output_mappings(
+                            remux_result.get("text") or "",
+                            outputs_result.get("text") or "",
+                        )
+
+                        for output_row in service_output_rows:
+                            conn.execute(
+                                """
+                                INSERT INTO wisi_service_output_mapping_state(
+                                    module_id,
+                                    configured_input_id,
+                                    service_id,
+                                    remux_instance_id,
+                                    output_id,
+                                    output_name,
+                                    output_type,
+                                    first_seen_at,
+                                    last_seen_at
+                                )
+                                VALUES(?,?,?,?,?,?,?,?,?)
+                                ON CONFLICT(
+                                    module_id,
+                                    configured_input_id,
+                                    service_id,
+                                    remux_instance_id,
+                                    output_id
+                                ) DO UPDATE SET
+                                    output_name=excluded.output_name,
+                                    output_type=excluded.output_type,
+                                    last_seen_at=excluded.last_seen_at
+                                """,
+                                (
+                                    module_id,
+                                    int(output_row["configured_input_id"]),
+                                    int(output_row["service_id"]),
+                                    int(output_row["remux_instance_id"]),
+                                    int(output_row["output_id"]),
+                                    str(output_row["output_name"]),
+                                    output_row.get("output_type"),
+                                    module_sampled_at,
+                                    module_sampled_at,
+                                ),
+                            )
+                            service_output_mapping_rows += 1
+                    else:
+                        errors = []
+                        if not outputs_result.get("ok"):
+                            errors.append(
+                                "outputs_conf: "
+                                + str(
+                                    outputs_result.get("error")
+                                    or "resource unavailable"
+                                )
+                            )
+                        if not remux_result.get("ok"):
+                            errors.append(
+                                "remux_config: "
+                                + str(
+                                    remux_result.get("error")
+                                    or "resource unavailable"
+                                )
+                            )
+                        service_output_mapping_error = "; ".join(errors)
+
                     conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                     conn.commit()
 
@@ -2233,6 +2422,8 @@ def collect_once() -> dict[str, Any]:
                             if r.get("mapping_status") == "UNRESOLVED"
                         ),
                         "dynamic_mapping_error": mapping_error,
+                        "service_output_mapping_rows": service_output_mapping_rows,
+                        "service_output_mapping_error": service_output_mapping_error,
                         "tuner_config_rows": tuner_config_rows,
                         "tuner_config_error": tuner_config_error,
                         **counts,

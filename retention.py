@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,9 @@ from typing import Iterable
 from config import DATABASE_PATH
 
 
-RETENTION_DAYS = 15
+RETENTION_DAYS = 30
+RETENTION_BATCH_SIZE = 50_000
+RETENTION_BATCH_PAUSE_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,14 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
     RetentionTarget("pid_samples", "sampled_at"),
     RetentionTarget("pcr_input_samples", "sampled_at"),
     RetentionTarget("pcr_pid_samples", "sampled_at"),
+    RetentionTarget("service_samples", "sampled_at"),
+    RetentionTarget("input_tuner_mapping_samples", "sampled_at"),
+    RetentionTarget("tuner_config_samples", "sampled_at"),
+    RetentionTarget("tv43_carrier_history", "sampled_at"),
+    RetentionTarget("tv43_service_history", "sampled_at"),
+    RetentionTarget("wellav_input_samples", "sampled_at"),
+    RetentionTarget("wellav_service_samples", "sampled_at"),
+    RetentionTarget("wellav_poll_runs", "started_at"),
     RetentionTarget("monitoring_events", "occurred_at"),
     RetentionTarget("poll_runs", "started_at"),
 )
@@ -158,75 +169,163 @@ def build_retention_report(
     return report
 
 
+
+def primary_key_column(
+    conn: sqlite3.Connection,
+    table: str,
+) -> str:
+    rows = conn.execute(
+        f"PRAGMA table_info({table})"
+    ).fetchall()
+
+    primary_keys = sorted(
+        (int(row["pk"]), str(row["name"]))
+        for row in rows
+        if int(row["pk"] or 0) > 0
+    )
+
+    if len(primary_keys) != 1:
+        raise RuntimeError(
+            f"Retention target {table} must have exactly one "
+            f"primary-key column; found {len(primary_keys)}"
+        )
+
+    return primary_keys[0][1]
+
+
+def delete_expired_batches(
+    conn: sqlite3.Connection,
+    *,
+    target: RetentionTarget,
+    cutoff: str,
+    batch_size: int = RETENTION_BATCH_SIZE,
+    batch_pause_seconds: float = RETENTION_BATCH_PAUSE_SECONDS,
+) -> int:
+    """Delete expired append-only history in short committed batches.
+
+    The monitored history tables are append-only and use increasing integer
+    primary keys. Oldest primary-key rows are processed first to avoid one
+    enormous DELETE transaction and WAL burst on the production database.
+    """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+
+    pk = primary_key_column(conn, target.table)
+    total_deleted = 0
+
+    while True:
+        oldest = conn.execute(
+            f"SELECT {pk}, {target.timestamp_column} "
+            f"FROM {target.table} "
+            f"ORDER BY {pk} ASC LIMIT 1"
+        ).fetchone()
+
+        if oldest is None:
+            break
+
+        oldest_timestamp = str(oldest[target.timestamp_column])
+
+        if oldest_timestamp >= cutoff:
+            break
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            changes_before = conn.total_changes
+
+            conn.execute(
+                f"DELETE FROM {target.table} "
+                f"WHERE {pk} IN ("
+                f"SELECT {pk} FROM {target.table} "
+                f"WHERE {target.timestamp_column} < ? "
+                f"ORDER BY {pk} ASC "
+                f"LIMIT ?"
+                f")",
+                (cutoff, batch_size),
+            )
+
+            batch_deleted = conn.total_changes - changes_before
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        total_deleted += int(batch_deleted)
+
+        if batch_deleted == 0:
+            break
+
+        if batch_deleted < batch_size:
+            break
+
+        if batch_pause_seconds > 0:
+            time.sleep(batch_pause_seconds)
+
+    return total_deleted
+
+
 def cleanup_retention(
     *,
     retention_days: int = RETENTION_DAYS,
     apply: bool = False,
     database_path: Path | str = DATABASE_PATH,
+    batch_size: int = RETENTION_BATCH_SIZE,
+    batch_pause_seconds: float = RETENTION_BATCH_PAUSE_SECONDS,
 ) -> dict[str, object]:
-    """
-    Delete historical rows older than the configured retention window.
+    """Apply the rolling history-retention policy.
 
-    Safe behavior:
-      - apply=False: report only; no data is changed.
-      - apply=True: all deletes occur inside one transaction.
-      - any failure rolls back the entire cleanup.
-      - counter_state and inventory/identity tables are never age-pruned here.
-      - database connection is explicitly closed before returning.
+    Dry-run mode preserves the existing exact-count report.
+    Apply mode uses short per-batch transactions to limit writer-lock duration
+    and WAL growth on large production databases.
     """
     cutoff = cutoff_iso(retention_days=retention_days)
 
-    # IMPORTANT:
-    # sqlite3.Connection.__enter__/__exit__ manages transactions but does not
-    # guarantee that the connection object is closed. On Windows that can keep
-    # the SQLite file locked. contextlib.closing guarantees deterministic close.
     with closing(open_db(database_path)) as conn:
         validate_targets(conn)
 
-        before = build_retention_report(
-            conn,
-            cutoff=cutoff,
-        )
+        if not apply:
+            before = build_retention_report(
+                conn,
+                cutoff=cutoff,
+            )
 
-        deleted = {
-            table: 0
-            for table in before
-        }
+            deleted = {
+                table: 0
+                for table in before
+            }
 
-        if apply:
-            try:
-                conn.execute("BEGIN IMMEDIATE")
+            return {
+                "database_path": str(database_path),
+                "retention_days": retention_days,
+                "cutoff": cutoff,
+                "apply": False,
+                "expired_rows": before,
+                "deleted_rows": deleted,
+                "total_expired": sum(before.values()),
+                "total_deleted": 0,
+            }
 
-                for target in RETENTION_TARGETS:
-                    sql = (
-                        f"DELETE FROM {target.table} "
-                        f"WHERE {target.timestamp_column} < ?"
-                    )
+        deleted: dict[str, int] = {}
 
-                    cursor = conn.execute(
-                        sql,
-                        (cutoff,),
-                    )
+        for target in RETENTION_TARGETS:
+            deleted[target.table] = delete_expired_batches(
+                conn,
+                target=target,
+                cutoff=cutoff,
+                batch_size=batch_size,
+                batch_pause_seconds=batch_pause_seconds,
+            )
 
-                    deleted[target.table] = max(
-                        int(cursor.rowcount),
-                        0,
-                    )
-
-                conn.commit()
-
-            except Exception:
-                conn.rollback()
-                raise
+        expired = dict(deleted)
 
         return {
             "database_path": str(database_path),
             "retention_days": retention_days,
             "cutoff": cutoff,
-            "apply": apply,
-            "expired_rows": before,
+            "apply": True,
+            "expired_rows": expired,
             "deleted_rows": deleted,
-            "total_expired": sum(before.values()),
+            "total_expired": sum(expired.values()),
             "total_deleted": sum(deleted.values()),
         }
 

@@ -7,7 +7,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DATABASE_PATH = ROOT / "database" / "wisi_monitor.db"
-RETENTION_DAYS = 15
+RETENTION_DAYS = 30
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tv43_carrier_history (
