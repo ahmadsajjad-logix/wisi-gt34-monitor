@@ -383,3 +383,85 @@ The repository does not contain the production Wellav API token.
 Set the environment variable before running the collector:
 
 WELLAV_API_TOKEN=<your local Wellav API token>
+
+## V11.6 - WISI Route and MCPC Notification Correction
+
+V11.6 hardens established WISI route handling and transmission-alert
+presentation following production forensic review of real carrier and
+service incidents.
+
+### WISI established-route correction
+
+- A temporary loss of dynamic WISI mapping during a genuine RF unlock
+  is no longer converted directly into `expected_path_down`.
+- The policy first checks the previously established physical WISI
+  tuner and reconstructs its authoritative tuner / transport history.
+- A sustained RF unlock therefore remains `carrier_unlocked` and uses
+  the configured carrier-unlock persistence.
+- `expected_path_down` is retained only when fresh configuration
+  evidence proves that the established tuner disappeared or was
+  reconfigured.
+- Monitoring uncertainty remains fail-closed and does not manufacture
+  a transmission DOWN or UP state.
+
+### MCPC notification formatting
+
+For carriers containing multiple program services (MCPC), transmission
+alerts now use one compact multiplex-oriented notification instead of
+one `Channel:` line per service.
+
+Carrier or transport outage notifications contain:
+
+- satellite / band / RF engineering line;
+- `Following Channel are ? DOWN`;
+- affected services grouped three per line where possible.
+
+Individual service outages on an otherwise healthy MCPC carrier use
+the same compact format but contain only the affected services.
+
+### Accurate MCPC recovery reporting
+
+A parent carrier / transport recovery no longer automatically reports
+every service on the multiplex as UP.
+
+If independent service-down episodes remain active after the carrier
+recovers:
+
+- only genuinely recovered services appear under
+  `Following Channel are ? UP`;
+- services still unavailable appear under
+  `Following Channel remain ? DOWN`;
+- total carrier / transport downtime is retained.
+
+This prevents a carrier recovery from falsely implying recovery of
+services that were already independently DOWN or remain missing.
+
+### SCPC compatibility
+
+Single-channel-per-carrier (SCPC) notifications retain the existing
+format.
+
+### Persistence policy
+
+V11.6 does not change the validated persistence thresholds:
+
+- standard transmission / service DOWN: 15 seconds;
+- carrier unlock: 20 seconds;
+- NULL-only transport payload: 20 seconds;
+- recovery: 10 seconds;
+- continuity gap protection: greater than 8 seconds resets persistence.
+
+### Production validation
+
+Before deployment, V11.6 passed isolated mandatory tests covering:
+
+- historical 11566 MHz WISI unlock reconstruction;
+- prevention of false `expected_path_down`;
+- MCPC carrier-DOWN formatting;
+- MCPC service-DOWN formatting;
+- partial MCPC recovery accuracy;
+- preservation of SCPC formatting.
+
+Final production activation also passed an isolated current-state dry
+run with all 43 carrier routes and cursors present and zero new
+notifications generated during validation.

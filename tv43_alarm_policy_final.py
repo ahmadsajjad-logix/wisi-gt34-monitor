@@ -1886,9 +1886,25 @@ def make_email(
     event_type: str,
     started_at: datetime,
     occurred_at: datetime,
+    remaining_down: tuple[
+        tuple[int, str], ...
+    ] = (),
 ) -> EmailMessage:
     # Import lazily to avoid a circular import during module startup.
     from tv43_whatsapp_nologo_email import make_whatsapp_email
+
+    key = (
+        f"{meta['host']}|"
+        f"M{int(meta['module'])}"
+        f"C{int(meta['channel'])}"
+    )
+
+    expected = (
+        load_expected_services()
+        .get(key, ())
+    )
+
+    is_mcpc = len(expected) > 1
 
     return make_whatsapp_email(
         meta=meta,
@@ -1896,6 +1912,9 @@ def make_email(
         event_type=event_type,
         started_at=started_at,
         occurred_at=occurred_at,
+        is_mcpc=is_mcpc,
+        remaining_down=
+            remaining_down,
     )
 
 def queue_email(
@@ -2806,6 +2825,18 @@ def process_snapshot(
         else:
             nonindividual_recoveries.append(item)
 
+    current_down_by_sid: dict[int, str] = {}
+
+    for current_condition in current.values():
+        if (
+            current_condition.kind
+            == "individual_service_down"
+        ):
+            for sid, name in current_condition.affected:
+                current_down_by_sid[
+                    int(sid)
+                ] = str(name)
+
     for event_key, row, condition, started_at, recovery_first_seen in nonindividual_recoveries:
         # Persistence decides whether to notify; the reported recovery time is
         # the first authoritative healthy observation.
@@ -2847,12 +2878,59 @@ def process_snapshot(
         # WISI native event-log timestamps; persistence-qualified monitor
         # observations remain authoritative for notification and downtime.
 
+        email_condition = condition
+
+        remaining_down: tuple[
+            tuple[int, str], ...
+        ] = ()
+
+        if condition.kind in {
+            "expected_path_down",
+            "input_disabled",
+            "carrier_unlocked",
+            "transport_stream_down",
+            "transport_payload_down",
+        }:
+            recovered_services = tuple(
+                (sid, name)
+                for sid, name
+                in condition.affected
+                if int(sid)
+                    not in current_down_by_sid
+            )
+
+            remaining_down = tuple(
+                (
+                    sid,
+                    current_down_by_sid.get(
+                        int(sid),
+                        name,
+                    ),
+                )
+                for sid, name
+                in condition.affected
+                if int(sid)
+                    in current_down_by_sid
+            )
+
+            email_condition = Condition(
+                kind=condition.kind,
+                event_key=
+                    condition.event_key,
+                affected=
+                    recovered_services,
+                status_line=
+                    condition.status_line,
+            )
+
         msg = make_email(
             meta=meta,
-            condition=condition,
+            condition=email_condition,
             event_type="RECOVERY",
             started_at=started_at,
             occurred_at=cleared_at,
+            remaining_down=
+                remaining_down,
         )
 
         conn.execute(
@@ -3630,6 +3708,270 @@ def build_multisource_commissioning_plan(
     return plan
 
 
+
+def read_established_wisi_fallback_history(
+    monitor_conn: sqlite3.Connection,
+    *,
+    meta: dict[str, Any],
+    latest_snapshot: dict[str, Any],
+    cursor: sqlite3.Row | dict[str, Any],
+    reference_at: datetime,
+) -> tuple[
+    str,
+    list[dict[str, Any]],
+    datetime | None,
+]:
+    """Recover observations from the established WISI route.
+
+    ESTABLISHED:
+        the physical tuner still carries this RF identity.
+
+    PATH_ABSENT:
+        fresh tuner configuration proves that the established
+        tuner disappeared or was reconfigured.
+
+    UNCERTAIN:
+        evidence is insufficient or stale; infer neither DOWN nor UP.
+    """
+
+    configured_db_id = (
+        cursor["configured_tuner_db_id"]
+    )
+
+    resolved_db_id = (
+        cursor["resolved_tuner_db_id"]
+    )
+
+    if (
+        configured_db_id is None
+        or resolved_db_id is None
+    ):
+        return "UNCERTAIN", [], None
+
+    configured_db_id = int(
+        configured_db_id
+    )
+
+    resolved_db_id = int(
+        resolved_db_id
+    )
+
+    tuner_identity = monitor_conn.execute(
+        """
+        SELECT
+            module_id,
+            input_id
+        FROM tuners
+        WHERE id=?
+        """,
+        (resolved_db_id,),
+    ).fetchone()
+
+    if tuner_identity is None:
+        return "PATH_ABSENT", [], None
+
+    module_id = int(
+        tuner_identity["module_id"]
+    )
+
+    tuner_object_id = int(
+        tuner_identity["input_id"]
+    )
+
+    latest_cfg = monitor_conn.execute(
+        """
+        SELECT MAX(sampled_at) AS sampled_at
+        FROM tuner_config_samples
+        WHERE module_id=?
+          AND sampled_at<=?
+        """,
+        (
+            module_id,
+            reference_at.isoformat(),
+        ),
+    ).fetchone()
+
+    if (
+        latest_cfg is None
+        or latest_cfg["sampled_at"]
+            is None
+    ):
+        return "UNCERTAIN", [], None
+
+    cfg_at = parse_dt(
+        str(latest_cfg["sampled_at"])
+    )
+
+    cfg_age = (
+        reference_at - cfg_at
+    ).total_seconds()
+
+    if (
+        cfg_age < 0
+        or cfg_age
+            > SNAPSHOT_STALE_SECONDS
+    ):
+        return "UNCERTAIN", [], None
+
+    rf = monitor_conn.execute(
+        """
+        SELECT
+            frequency_mhz,
+            polarisation,
+            symbol_rate_mbd
+        FROM tuner_config_samples
+        WHERE module_id=?
+          AND tuner_object_id=?
+          AND sampled_at=?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            module_id,
+            tuner_object_id,
+            cfg_at.isoformat(),
+        ),
+    ).fetchone()
+
+    if rf is None:
+        return "PATH_ABSENT", [], None
+
+    same_rf = (
+        rf["frequency_mhz"] is not None
+        and abs(
+            float(rf["frequency_mhz"])
+            - float(meta["frequency_mhz"])
+        )
+        <= RF_FREQUENCY_TOLERANCE_MHZ
+
+        and str(
+            rf["polarisation"] or ""
+        ).upper()
+        == str(
+            meta["polarisation"]
+        ).upper()
+
+        and rf["symbol_rate_mbd"]
+            is not None
+
+        and abs(
+            float(rf["symbol_rate_mbd"])
+            - float(meta["symbol_rate_mbd"])
+        )
+        <= RF_SYMBOL_RATE_TOLERANCE_MBD
+    )
+
+    if not same_rf:
+        return "PATH_ABSENT", [], None
+
+    latest_complete = monitor_conn.execute(
+        """
+        SELECT ts.sampled_at
+        FROM tuner_samples AS ts
+        WHERE ts.tuner_id=?
+          AND ts.sampled_at<=?
+          AND EXISTS (
+              SELECT 1
+              FROM ts_samples AS transport
+              WHERE transport.tuner_id=?
+                AND transport.sampled_at=
+                    ts.sampled_at
+          )
+        ORDER BY
+            ts.sampled_at DESC,
+            ts.id DESC
+        LIMIT 1
+        """,
+        (
+            resolved_db_id,
+            reference_at.isoformat(),
+            configured_db_id,
+        ),
+    ).fetchone()
+
+    if (
+        latest_complete is None
+        or latest_complete[
+            "sampled_at"
+        ] is None
+    ):
+        return "UNCERTAIN", [], None
+
+    latest_at = parse_dt(
+        str(
+            latest_complete[
+                "sampled_at"
+            ]
+        )
+    )
+
+    telemetry_age = (
+        reference_at - latest_at
+    ).total_seconds()
+
+    if (
+        telemetry_age < 0
+        or telemetry_age
+            > SNAPSHOT_STALE_SECONDS
+    ):
+        return (
+            "UNCERTAIN",
+            [],
+            latest_at,
+        )
+
+    base = dict(
+        latest_snapshot
+    )
+
+    base["observed_at"] = (
+        latest_at.isoformat()
+    )
+
+    base["execution_error"] = None
+    base["expected_path_absent"] = False
+
+    base[
+        "configured_tuner_db_id"
+    ] = configured_db_id
+
+    base[
+        "resolved_tuner_db_id"
+    ] = resolved_db_id
+
+    after_at = parse_dt(
+        str(
+            cursor[
+                "last_processed_sampled_at"
+            ]
+        )
+    )
+
+    freshness_floor = (
+        latest_at
+        - timedelta(
+            seconds=
+                SNAPSHOT_STALE_SECONDS
+        )
+    )
+
+    if after_at < freshness_floor:
+        after_at = freshness_floor
+
+    samples = read_resolved_sample_history(
+        monitor_conn,
+        base_snapshot=base,
+        after_sampled_at=after_at,
+        until_sampled_at=latest_at,
+    )
+
+    return (
+        "ESTABLISHED",
+        samples,
+        latest_at,
+    )
+
+
 def process_resolved_history(
     conn: sqlite3.Connection,
     monitor_conn: sqlite3.Connection,
@@ -3656,15 +3998,129 @@ def process_resolved_history(
         key,
     )
 
-    # If that established path is absent from the CURRENT mapping generation,
-    # interpret it as expected-path disappearance. A carrier that has never
-    # been successfully resolved has no cursor and remains fail-closed as
-    # MONITORING_PATH_UNAVAILABLE.
+    # Dynamic WISI identity can temporarily disappear during
+    # a real RF unlock. Before declaring expected_path_down,
+    # inspect the established physical tuner and its actual
+    # tuner / transport observations.
     if (
         latest_snapshot.get("execution_error")
         == "MONITORING_PATH_UNAVAILABLE"
         and cursor is not None
     ):
+        reference_at = parse_dt(
+            str(
+                latest_snapshot[
+                    "observed_at"
+                ]
+            )
+        )
+
+        (
+            fallback_status,
+            fallback_samples,
+            fallback_latest_at,
+        ) = (
+            read_established_wisi_fallback_history(
+                monitor_conn,
+                meta=meta,
+                latest_snapshot=
+                    latest_snapshot,
+                cursor=cursor,
+                reference_at=
+                    reference_at,
+            )
+        )
+
+        if fallback_status == "ESTABLISHED":
+
+            if fallback_latest_at is not None:
+
+                cursor_at = parse_dt(
+                    str(
+                        cursor[
+                            "last_processed_sampled_at"
+                        ]
+                    )
+                )
+
+                if (
+                    cursor_at
+                    < fallback_latest_at
+                    - timedelta(
+                        seconds=
+                            SNAPSHOT_STALE_SECONDS
+                    )
+                ):
+                    conn.execute(
+                        """
+                        DELETE FROM transition_candidate
+                        WHERE event_key LIKE ?
+                        """,
+                        (f"{key}|%",),
+                    )
+
+            processed = 0
+
+            for sample in fallback_samples:
+
+                process_snapshot(
+                    conn,
+                    log,
+                    key,
+                    meta,
+                    sample,
+                )
+
+                sample_at = parse_dt(
+                    str(
+                        sample[
+                            "observed_at"
+                        ]
+                    )
+                )
+
+                set_carrier_sample_cursor(
+                    conn,
+                    carrier_key=key,
+                    sampled_at=sample_at,
+                    configured_tuner_db_id=
+                        int(
+                            cursor[
+                                "configured_tuner_db_id"
+                            ]
+                        ),
+                    resolved_tuner_db_id=
+                        int(
+                            cursor[
+                                "resolved_tuner_db_id"
+                            ]
+                        ),
+                )
+
+                processed += 1
+
+            return processed
+
+        if fallback_status == "UNCERTAIN":
+
+            conn.execute(
+                """
+                DELETE FROM transition_candidate
+                WHERE event_key LIKE ?
+                """,
+                (f"{key}|%",),
+            )
+
+            log.warning(
+                "ESTABLISHED WISI TELEMETRY UNCERTAIN "
+                "- STATE PRESERVED | %s",
+                key,
+            )
+
+            return 0
+
+        # Fresh configuration proves that the old tuner
+        # no longer carries this RF identity.
         established_absence = dict(
             latest_snapshot
         )
