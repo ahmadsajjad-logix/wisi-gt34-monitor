@@ -1,0 +1,1324 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "scope": "email_notification_only",
+    "monitoring_unchanged": true,
+    "database_unchanged": true,
+    "alarm_state_unchanged": true,
+    "email_display_name": "current_monitored_name",
+    "runtime_matching": "normalized_exact_plus_explicit_approved_aliases",
+    "generic_category_entries_are_not_wildcards": true
+  },
+  "reference_counts": {
+    "stv_rows": 139,
+    "landing_rights_rows": 27,
+    "reference_rows": 166,
+    "manual_overrides": 10,
+    "total_audit_rows": 176,
+    "unique_normalized_qualification_names": 173
+  },
+  "entries": [
+    {
+      "audit_id": 1,
+      "source": "STV",
+      "source_serial": 1,
+      "name": "AVT Khyber"
+    },
+    {
+      "audit_id": 2,
+      "source": "STV",
+      "source_serial": 2,
+      "name": "Khyber News"
+    },
+    {
+      "audit_id": 3,
+      "source": "STV",
+      "source_serial": 3,
+      "name": "K-2"
+    },
+    {
+      "audit_id": 4,
+      "source": "STV",
+      "source_serial": 4,
+      "name": "Rohi TV"
+    },
+    {
+      "audit_id": 5,
+      "source": "STV",
+      "source_serial": 5,
+      "name": "Such TV"
+    },
+    {
+      "audit_id": 6,
+      "source": "STV",
+      "source_serial": 6,
+      "name": "Roze TV"
+    },
+    {
+      "audit_id": 7,
+      "source": "STV",
+      "source_serial": 7,
+      "name": "Mashriq TV"
+    },
+    {
+      "audit_id": 8,
+      "source": "STV",
+      "source_serial": 8,
+      "name": "Pushto One"
+    },
+    {
+      "audit_id": 9,
+      "source": "STV",
+      "source_serial": 9,
+      "name": "SEE TV"
+    },
+    {
+      "audit_id": 10,
+      "source": "STV",
+      "source_serial": 10,
+      "name": "ARY News"
+    },
+    {
+      "audit_id": 11,
+      "source": "STV",
+      "source_serial": 11,
+      "name": "ARY Digital"
+    },
+    {
+      "audit_id": 12,
+      "source": "STV",
+      "source_serial": 12,
+      "name": "ARY Zindagi"
+    },
+    {
+      "audit_id": 13,
+      "source": "STV",
+      "source_serial": 13,
+      "name": "GNN"
+    },
+    {
+      "audit_id": 14,
+      "source": "STV",
+      "source_serial": 14,
+      "name": "Play Entertainment"
+    },
+    {
+      "audit_id": 15,
+      "source": "STV",
+      "source_serial": 15,
+      "name": "Ravi TV"
+    },
+    {
+      "audit_id": 16,
+      "source": "STV",
+      "source_serial": 16,
+      "name": "Hum TV"
+    },
+    {
+      "audit_id": 17,
+      "source": "STV",
+      "source_serial": 17,
+      "name": "Masala TV"
+    },
+    {
+      "audit_id": 18,
+      "source": "STV",
+      "source_serial": 18,
+      "name": "Hum News"
+    },
+    {
+      "audit_id": 19,
+      "source": "STV",
+      "source_serial": 19,
+      "name": "Hum Sitaray"
+    },
+    {
+      "audit_id": 20,
+      "source": "STV",
+      "source_serial": 20,
+      "name": "BOL Entertainment"
+    },
+    {
+      "audit_id": 21,
+      "source": "STV",
+      "source_serial": 21,
+      "name": "BOL News"
+    },
+    {
+      "audit_id": 22,
+      "source": "STV",
+      "source_serial": 22,
+      "name": "Samaa TV"
+    },
+    {
+      "audit_id": 23,
+      "source": "STV",
+      "source_serial": 23,
+      "name": "Samaa Entertainment"
+    },
+    {
+      "audit_id": 24,
+      "source": "STV",
+      "source_serial": 24,
+      "name": "TV ONE"
+    },
+    {
+      "audit_id": 25,
+      "source": "STV",
+      "source_serial": 25,
+      "name": "Waseb TV"
+    },
+    {
+      "audit_id": 26,
+      "source": "STV",
+      "source_serial": 26,
+      "name": "NEWS ONE"
+    },
+    {
+      "audit_id": 27,
+      "source": "STV",
+      "source_serial": 27,
+      "name": "AbbTakk"
+    },
+    {
+      "audit_id": 28,
+      "source": "STV",
+      "source_serial": 28,
+      "name": "APNA Channel"
+    },
+    {
+      "audit_id": 29,
+      "source": "STV",
+      "source_serial": 29,
+      "name": "Jalwa"
+    },
+    {
+      "audit_id": 30,
+      "source": "STV",
+      "source_serial": 30,
+      "name": "8XMusic"
+    },
+    {
+      "audit_id": 31,
+      "source": "STV",
+      "source_serial": 31,
+      "name": "KTN News"
+    },
+    {
+      "audit_id": 32,
+      "source": "STV",
+      "source_serial": 32,
+      "name": "KTN"
+    },
+    {
+      "audit_id": 33,
+      "source": "STV",
+      "source_serial": 33,
+      "name": "Kashish"
+    },
+    {
+      "audit_id": 34,
+      "source": "STV",
+      "source_serial": 34,
+      "name": "Sindh TV News"
+    },
+    {
+      "audit_id": 35,
+      "source": "STV",
+      "source_serial": 35,
+      "name": "Sindh TV"
+    },
+    {
+      "audit_id": 36,
+      "source": "STV",
+      "source_serial": 36,
+      "name": "News 14 HD"
+    },
+    {
+      "audit_id": 37,
+      "source": "STV",
+      "source_serial": 37,
+      "name": "Mehran TV"
+    },
+    {
+      "audit_id": 38,
+      "source": "STV",
+      "source_serial": 38,
+      "name": "Express Entertainment"
+    },
+    {
+      "audit_id": 39,
+      "source": "STV",
+      "source_serial": 39,
+      "name": "Chaupal"
+    },
+    {
+      "audit_id": 40,
+      "source": "STV",
+      "source_serial": 40,
+      "name": "AAJ News"
+    },
+    {
+      "audit_id": 41,
+      "source": "STV",
+      "source_serial": 41,
+      "name": "AAJ Entertainment"
+    },
+    {
+      "audit_id": 42,
+      "source": "STV",
+      "source_serial": 42,
+      "name": "Geo Tez"
+    },
+    {
+      "audit_id": 43,
+      "source": "STV",
+      "source_serial": 43,
+      "name": "Geo Kahani"
+    },
+    {
+      "audit_id": 44,
+      "source": "STV",
+      "source_serial": 44,
+      "name": "Geo News"
+    },
+    {
+      "audit_id": 45,
+      "source": "STV",
+      "source_serial": 45,
+      "name": "Geo Entertainment"
+    },
+    {
+      "audit_id": 46,
+      "source": "STV",
+      "source_serial": 46,
+      "name": "Geo Super"
+    },
+    {
+      "audit_id": 47,
+      "source": "STV",
+      "source_serial": 47,
+      "name": "AUR LIFE HD"
+    },
+    {
+      "audit_id": 48,
+      "source": "STV",
+      "source_serial": 48,
+      "name": "BUYPASS TV"
+    },
+    {
+      "audit_id": 49,
+      "source": "STV",
+      "source_serial": 49,
+      "name": "VSH TV"
+    },
+    {
+      "audit_id": 50,
+      "source": "STV",
+      "source_serial": 50,
+      "name": "Dawn News Urdu"
+    },
+    {
+      "audit_id": 51,
+      "source": "STV",
+      "source_serial": 51,
+      "name": "Awaz TV"
+    },
+    {
+      "audit_id": 52,
+      "source": "STV",
+      "source_serial": 52,
+      "name": "K-21"
+    },
+    {
+      "audit_id": 53,
+      "source": "STV",
+      "source_serial": 53,
+      "name": "City-21"
+    },
+    {
+      "audit_id": 54,
+      "source": "STV",
+      "source_serial": 54,
+      "name": "VTV-I"
+    },
+    {
+      "audit_id": 55,
+      "source": "STV",
+      "source_serial": 55,
+      "name": "VTV-II"
+    },
+    {
+      "audit_id": 56,
+      "source": "STV",
+      "source_serial": 56,
+      "name": "VTV-III"
+    },
+    {
+      "audit_id": 57,
+      "source": "STV",
+      "source_serial": 57,
+      "name": "VTV-IV"
+    },
+    {
+      "audit_id": 58,
+      "source": "STV",
+      "source_serial": 58,
+      "name": "NTN News"
+    },
+    {
+      "audit_id": 59,
+      "source": "STV",
+      "source_serial": 59,
+      "name": "Public TV"
+    },
+    {
+      "audit_id": 60,
+      "source": "STV",
+      "source_serial": 60,
+      "name": "Dunya TV"
+    },
+    {
+      "audit_id": 61,
+      "source": "STV",
+      "source_serial": 61,
+      "name": "Dunya TV Entertainment"
+    },
+    {
+      "audit_id": 62,
+      "source": "STV",
+      "source_serial": 62,
+      "name": "Lahore News HD"
+    },
+    {
+      "audit_id": 63,
+      "source": "STV",
+      "source_serial": 63,
+      "name": "WAQT"
+    },
+    {
+      "audit_id": 64,
+      "source": "STV",
+      "source_serial": 64,
+      "name": "CHANNEL 5"
+    },
+    {
+      "audit_id": 65,
+      "source": "STV",
+      "source_serial": 65,
+      "name": "SUNO TV"
+    },
+    {
+      "audit_id": 66,
+      "source": "STV",
+      "source_serial": 66,
+      "name": "Din News"
+    },
+    {
+      "audit_id": 67,
+      "source": "STV",
+      "source_serial": 67,
+      "name": "TV Today"
+    },
+    {
+      "audit_id": 68,
+      "source": "STV",
+      "source_serial": 68,
+      "name": "Star Asia"
+    },
+    {
+      "audit_id": 69,
+      "source": "STV",
+      "source_serial": 69,
+      "name": "City -42"
+    },
+    {
+      "audit_id": 70,
+      "source": "STV",
+      "source_serial": 70,
+      "name": "24 News HD"
+    },
+    {
+      "audit_id": 71,
+      "source": "STV",
+      "source_serial": 71,
+      "name": "Lahore Rang"
+    },
+    {
+      "audit_id": 72,
+      "source": "STV",
+      "source_serial": 72,
+      "name": "ZAIQA"
+    },
+    {
+      "audit_id": 73,
+      "source": "STV",
+      "source_serial": 73,
+      "name": "City 41"
+    },
+    {
+      "audit_id": 74,
+      "source": "STV",
+      "source_serial": 74,
+      "name": "Neo"
+    },
+    {
+      "audit_id": 75,
+      "source": "STV",
+      "source_serial": 75,
+      "name": "Capital TV"
+    },
+    {
+      "audit_id": 76,
+      "source": "STV",
+      "source_serial": 76,
+      "name": "Film World"
+    },
+    {
+      "audit_id": 77,
+      "source": "STV",
+      "source_serial": 77,
+      "name": "LTN Family"
+    },
+    {
+      "audit_id": 78,
+      "source": "STV",
+      "source_serial": 78,
+      "name": "Aruj TV"
+    },
+    {
+      "audit_id": 79,
+      "source": "STV",
+      "source_serial": 79,
+      "name": "Channel 92"
+    },
+    {
+      "audit_id": 80,
+      "source": "STV",
+      "source_serial": 80,
+      "name": "9 News HD"
+    },
+    {
+      "audit_id": 81,
+      "source": "STV",
+      "source_serial": 81,
+      "name": "Express News"
+    },
+    {
+      "audit_id": 82,
+      "source": "STV",
+      "source_serial": 82,
+      "name": "Express 24/7"
+    },
+    {
+      "audit_id": 83,
+      "source": "STV",
+      "source_serial": 83,
+      "name": "Koh-e-Noor"
+    },
+    {
+      "audit_id": 84,
+      "source": "STV",
+      "source_serial": 84,
+      "name": "GTV"
+    },
+    {
+      "audit_id": 85,
+      "source": "STV",
+      "source_serial": 85,
+      "name": "AIOU"
+    },
+    {
+      "audit_id": 86,
+      "source": "STV",
+      "source_serial": 86,
+      "name": "AAN TV"
+    },
+    {
+      "audit_id": 87,
+      "source": "STV",
+      "source_serial": 87,
+      "name": "Planet-6"
+    },
+    {
+      "audit_id": 88,
+      "source": "STV",
+      "source_serial": 88,
+      "name": "Time Network"
+    },
+    {
+      "audit_id": 89,
+      "source": "STV",
+      "source_serial": 89,
+      "name": "News & Current Affairs category"
+    },
+    {
+      "audit_id": 90,
+      "source": "STV",
+      "source_serial": 90,
+      "name": "Entertainment category"
+    },
+    {
+      "audit_id": 91,
+      "source": "STV",
+      "source_serial": 91,
+      "name": "Regional Language category"
+    },
+    {
+      "audit_id": 92,
+      "source": "STV",
+      "source_serial": 92,
+      "name": "Sports category"
+    },
+    {
+      "audit_id": 93,
+      "source": "STV",
+      "source_serial": 93,
+      "name": "Global 1"
+    },
+    {
+      "audit_id": 94,
+      "source": "STV",
+      "source_serial": 94,
+      "name": "Venus HD"
+    },
+    {
+      "audit_id": 95,
+      "source": "STV",
+      "source_serial": 95,
+      "name": "Health Category"
+    },
+    {
+      "audit_id": 96,
+      "source": "STV",
+      "source_serial": 96,
+      "name": "aur News"
+    },
+    {
+      "audit_id": 97,
+      "source": "STV",
+      "source_serial": 97,
+      "name": "Fast Sports HD"
+    },
+    {
+      "audit_id": 98,
+      "source": "STV",
+      "source_serial": 98,
+      "name": "Green News"
+    },
+    {
+      "audit_id": 99,
+      "source": "STV",
+      "source_serial": 99,
+      "name": "Green Entertainment"
+    },
+    {
+      "audit_id": 100,
+      "source": "STV",
+      "source_serial": 100,
+      "name": "Green Lamhay"
+    },
+    {
+      "audit_id": 101,
+      "source": "STV",
+      "source_serial": 101,
+      "name": "Aik News HD"
+    },
+    {
+      "audit_id": 102,
+      "source": "STV",
+      "source_serial": 102,
+      "name": "Special TV"
+    },
+    {
+      "audit_id": 103,
+      "source": "STV",
+      "source_serial": 103,
+      "name": "SAB Entertainment HD"
+    },
+    {
+      "audit_id": 104,
+      "source": "STV",
+      "source_serial": 104,
+      "name": "Discover Pakistan"
+    },
+    {
+      "audit_id": 105,
+      "source": "STV",
+      "source_serial": 105,
+      "name": "Paigham TV"
+    },
+    {
+      "audit_id": 106,
+      "source": "STV",
+      "source_serial": 106,
+      "name": "SUN HD"
+    },
+    {
+      "audit_id": 107,
+      "source": "STV",
+      "source_serial": 107,
+      "name": "Entertainment category"
+    },
+    {
+      "audit_id": 108,
+      "source": "STV",
+      "source_serial": 108,
+      "name": "Asian Gateway Network (AGN)"
+    },
+    {
+      "audit_id": 109,
+      "source": "STV",
+      "source_serial": 109,
+      "name": "Alief TV"
+    },
+    {
+      "audit_id": 110,
+      "source": "STV",
+      "source_serial": 110,
+      "name": "M News"
+    },
+    {
+      "audit_id": 111,
+      "source": "STV",
+      "source_serial": 111,
+      "name": "M Life"
+    },
+    {
+      "audit_id": 112,
+      "source": "STV",
+      "source_serial": 112,
+      "name": "M Sports"
+    },
+    {
+      "audit_id": 113,
+      "source": "STV",
+      "source_serial": 113,
+      "name": "Me"
+    },
+    {
+      "audit_id": 114,
+      "source": "STV",
+      "source_serial": 114,
+      "name": "A Sports"
+    },
+    {
+      "audit_id": 115,
+      "source": "STV",
+      "source_serial": 115,
+      "name": "SET Entertainment"
+    },
+    {
+      "audit_id": 116,
+      "source": "STV",
+      "source_serial": 116,
+      "name": "MUN TV"
+    },
+    {
+      "audit_id": 117,
+      "source": "STV",
+      "source_serial": 117,
+      "name": "HEY TV"
+    },
+    {
+      "audit_id": 118,
+      "source": "STV",
+      "source_serial": 118,
+      "name": "Enjoy TV"
+    },
+    {
+      "audit_id": 119,
+      "source": "STV",
+      "source_serial": 119,
+      "name": "ABN News"
+    },
+    {
+      "audit_id": 120,
+      "source": "STV",
+      "source_serial": 120,
+      "name": "SEEN Profit"
+    },
+    {
+      "audit_id": 121,
+      "source": "STV",
+      "source_serial": 121,
+      "name": "Channel 11HD"
+    },
+    {
+      "audit_id": 122,
+      "source": "STV",
+      "source_serial": 122,
+      "name": "92 Entertainment"
+    },
+    {
+      "audit_id": 123,
+      "source": "STV",
+      "source_serial": 123,
+      "name": "365 News HD"
+    },
+    {
+      "audit_id": 124,
+      "source": "STV",
+      "source_serial": 124,
+      "name": "SUIT, Peshawar"
+    },
+    {
+      "audit_id": 125,
+      "source": "STV",
+      "source_serial": 125,
+      "name": "Roze Excel"
+    },
+    {
+      "audit_id": 126,
+      "source": "STV",
+      "source_serial": 126,
+      "name": "Hoora TV"
+    },
+    {
+      "audit_id": 127,
+      "source": "STV",
+      "source_serial": 127,
+      "name": "ARSH TV"
+    },
+    {
+      "audit_id": 128,
+      "source": "STV",
+      "source_serial": 128,
+      "name": "Sachal News Network (SNN)"
+    },
+    {
+      "audit_id": 129,
+      "source": "STV",
+      "source_serial": 129,
+      "name": "TUM Entertainment"
+    },
+    {
+      "audit_id": 130,
+      "source": "STV",
+      "source_serial": 130,
+      "name": "Health & Fitness (H&F)"
+    },
+    {
+      "audit_id": 131,
+      "source": "STV",
+      "source_serial": 131,
+      "name": "Pakistan 1"
+    },
+    {
+      "audit_id": 132,
+      "source": "STV",
+      "source_serial": 132,
+      "name": "Classic Express"
+    },
+    {
+      "audit_id": 133,
+      "source": "STV",
+      "source_serial": 133,
+      "name": "89 News HD"
+    },
+    {
+      "audit_id": 134,
+      "source": "STV",
+      "source_serial": 134,
+      "name": "Health category"
+    },
+    {
+      "audit_id": 135,
+      "source": "STV",
+      "source_serial": 135,
+      "name": "GNN Entertainment"
+    },
+    {
+      "audit_id": 136,
+      "source": "STV",
+      "source_serial": 136,
+      "name": "Regional Languages category"
+    },
+    {
+      "audit_id": 137,
+      "source": "STV",
+      "source_serial": 137,
+      "name": "Entertainment category"
+    },
+    {
+      "audit_id": 138,
+      "source": "STV",
+      "source_serial": 138,
+      "name": "ATHLETE"
+    },
+    {
+      "audit_id": 139,
+      "source": "STV",
+      "source_serial": 139,
+      "name": "Asia One"
+    },
+    {
+      "audit_id": 140,
+      "source": "Landing Rights",
+      "source_serial": 1,
+      "name": "CNN"
+    },
+    {
+      "audit_id": 141,
+      "source": "Landing Rights",
+      "source_serial": 2,
+      "name": "Cartoon Network"
+    },
+    {
+      "audit_id": 142,
+      "source": "Landing Rights",
+      "source_serial": 3,
+      "name": "Baby TV"
+    },
+    {
+      "audit_id": 143,
+      "source": "Landing Rights",
+      "source_serial": 4,
+      "name": "Nickelodeon"
+    },
+    {
+      "audit_id": 144,
+      "source": "Landing Rights",
+      "source_serial": 5,
+      "name": "HBO"
+    },
+    {
+      "audit_id": 145,
+      "source": "Landing Rights",
+      "source_serial": 6,
+      "name": "The Musik"
+    },
+    {
+      "audit_id": 146,
+      "source": "Landing Rights",
+      "source_serial": 7,
+      "name": "Ten Sports"
+    },
+    {
+      "audit_id": 147,
+      "source": "Landing Rights",
+      "source_serial": 8,
+      "name": "Filmax"
+    },
+    {
+      "audit_id": 148,
+      "source": "Landing Rights",
+      "source_serial": 9,
+      "name": "DW TV"
+    },
+    {
+      "audit_id": 149,
+      "source": "Landing Rights",
+      "source_serial": 10,
+      "name": "Discovery"
+    },
+    {
+      "audit_id": 150,
+      "source": "Landing Rights",
+      "source_serial": 11,
+      "name": "BBC World"
+    },
+    {
+      "audit_id": 151,
+      "source": "Landing Rights",
+      "source_serial": 12,
+      "name": "Animal Planet"
+    },
+    {
+      "audit_id": 152,
+      "source": "Landing Rights",
+      "source_serial": 13,
+      "name": "Discovery Kids"
+    },
+    {
+      "audit_id": 153,
+      "source": "Landing Rights",
+      "source_serial": 14,
+      "name": "Afghan TV"
+    },
+    {
+      "audit_id": 154,
+      "source": "Landing Rights",
+      "source_serial": 15,
+      "name": "CGTN News"
+    },
+    {
+      "audit_id": 155,
+      "source": "Landing Rights",
+      "source_serial": 16,
+      "name": "CGTN Documentary"
+    },
+    {
+      "audit_id": 156,
+      "source": "Landing Rights",
+      "source_serial": 17,
+      "name": "Great"
+    },
+    {
+      "audit_id": 157,
+      "source": "Landing Rights",
+      "source_serial": 18,
+      "name": "E-1"
+    },
+    {
+      "audit_id": 158,
+      "source": "Landing Rights",
+      "source_serial": 19,
+      "name": "Minimax"
+    },
+    {
+      "audit_id": 159,
+      "source": "Landing Rights",
+      "source_serial": 20,
+      "name": "A1 TV"
+    },
+    {
+      "audit_id": 160,
+      "source": "Landing Rights",
+      "source_serial": 21,
+      "name": "Kidzone TV"
+    },
+    {
+      "audit_id": 161,
+      "source": "Landing Rights",
+      "source_serial": 22,
+      "name": "RT TV"
+    },
+    {
+      "audit_id": 162,
+      "source": "Landing Rights",
+      "source_serial": 23,
+      "name": "Planet Fun"
+    },
+    {
+      "audit_id": 163,
+      "source": "Landing Rights",
+      "source_serial": 24,
+      "name": "Series Zone TV"
+    },
+    {
+      "audit_id": 164,
+      "source": "Landing Rights",
+      "source_serial": 25,
+      "name": "Insight TV"
+    },
+    {
+      "audit_id": 165,
+      "source": "Landing Rights",
+      "source_serial": 26,
+      "name": "South Asia Global TV"
+    },
+    {
+      "audit_id": 166,
+      "source": "Landing Rights",
+      "source_serial": 27,
+      "name": "POP"
+    },
+    {
+      "audit_id": 167,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 1,
+      "name": "APlus Pakistan"
+    },
+    {
+      "audit_id": 168,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 2,
+      "name": "ARY World"
+    },
+    {
+      "audit_id": 169,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 3,
+      "name": "ARYQTV"
+    },
+    {
+      "audit_id": 170,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 4,
+      "name": "Geo ME"
+    },
+    {
+      "audit_id": 171,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 5,
+      "name": "HUM MENA"
+    },
+    {
+      "audit_id": 172,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 6,
+      "name": "Khyber ME HD"
+    },
+    {
+      "audit_id": 173,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 7,
+      "name": "M-World"
+    },
+    {
+      "audit_id": 174,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 8,
+      "name": "Ocean News TV"
+    },
+    {
+      "audit_id": 175,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 9,
+      "name": "Paigham Pashto"
+    },
+    {
+      "audit_id": 176,
+      "source": "Manual PEMRA-licensed override",
+      "source_serial": 10,
+      "name": "PAKISTAN TV"
+    }
+  ],
+  "approved_monitored_aliases": [
+    {
+      "monitored_name": "BOL News Urdu",
+      "whitelist_name": "BOL News"
+    },
+    {
+      "monitored_name": "GTV-HD MM1",
+      "whitelist_name": "GTV"
+    },
+    {
+      "monitored_name": "ByPass",
+      "whitelist_name": "BUYPASS TV"
+    },
+    {
+      "monitored_name": "GreenEnt - HD",
+      "whitelist_name": "Green Entertainment"
+    },
+    {
+      "monitored_name": "Avt khyber HD",
+      "whitelist_name": "AVT Khyber"
+    },
+    {
+      "monitored_name": "Khyber News HD",
+      "whitelist_name": "Khyber News"
+    },
+    {
+      "monitored_name": "Kay-2 HD",
+      "whitelist_name": "K-2"
+    },
+    {
+      "monitored_name": "AAN TV - HD",
+      "whitelist_name": "AAN TV"
+    },
+    {
+      "monitored_name": "Roze Excel HD",
+      "whitelist_name": "Roze Excel"
+    },
+    {
+      "monitored_name": "Paigham Urdu",
+      "whitelist_name": "Paigham TV"
+    },
+    {
+      "monitored_name": "GNNHD",
+      "whitelist_name": "GNN"
+    },
+    {
+      "monitored_name": "CHAUPAAL",
+      "whitelist_name": "Chaupal"
+    },
+    {
+      "monitored_name": "Dunya News HD",
+      "whitelist_name": "Dunya TV"
+    },
+    {
+      "monitored_name": "Lahore News",
+      "whitelist_name": "Lahore News HD"
+    },
+    {
+      "monitored_name": "Dunya ENT",
+      "whitelist_name": "Dunya TV Entertainment"
+    },
+    {
+      "monitored_name": "Neo News HD",
+      "whitelist_name": "Neo"
+    },
+    {
+      "monitored_name": "APNA HD",
+      "whitelist_name": "APNA Channel"
+    },
+    {
+      "monitored_name": "8XM HD",
+      "whitelist_name": "8XMusic"
+    },
+    {
+      "monitored_name": "ABBTAKK HD",
+      "whitelist_name": "AbbTakk"
+    },
+    {
+      "monitored_name": "JALWA HD",
+      "whitelist_name": "Jalwa"
+    },
+    {
+      "monitored_name": "K21 NEWS HD",
+      "whitelist_name": "K-21"
+    },
+    {
+      "monitored_name": "VTV1",
+      "whitelist_name": "VTV-I"
+    },
+    {
+      "monitored_name": "VTV2",
+      "whitelist_name": "VTV-II"
+    },
+    {
+      "monitored_name": "WAQT NEWS HD",
+      "whitelist_name": "WAQT"
+    },
+    {
+      "monitored_name": "SUNO NEWS-HD",
+      "whitelist_name": "SUNO TV"
+    },
+    {
+      "monitored_name": "CITY-42 HD",
+      "whitelist_name": "City -42"
+    },
+    {
+      "monitored_name": "KTN-EN",
+      "whitelist_name": "KTN"
+    },
+    {
+      "monitored_name": "KASHIS",
+      "whitelist_name": "Kashish"
+    },
+    {
+      "monitored_name": "KTNNEW",
+      "whitelist_name": "KTN News"
+    },
+    {
+      "monitored_name": "SAMAA",
+      "whitelist_name": "Samaa TV"
+    },
+    {
+      "monitored_name": "HUM NEWS HD",
+      "whitelist_name": "Hum News"
+    },
+    {
+      "monitored_name": "HUM HD",
+      "whitelist_name": "Hum TV"
+    },
+    {
+      "monitored_name": "Public News",
+      "whitelist_name": "Public TV"
+    },
+    {
+      "monitored_name": "AIK NEWS",
+      "whitelist_name": "Aik News HD"
+    },
+    {
+      "monitored_name": "ABN News - HD",
+      "whitelist_name": "ABN News"
+    },
+    {
+      "monitored_name": "AGN NEWSE",
+      "whitelist_name": "Asian Gateway Network (AGN)"
+    },
+    {
+      "monitored_name": "Kohenoor TV",
+      "whitelist_name": "Koh-e-Noor"
+    },
+    {
+      "monitored_name": "Pashto 1",
+      "whitelist_name": "Pushto One"
+    },
+    {
+      "monitored_name": "Sindh News",
+      "whitelist_name": "Sindh TV News"
+    },
+    {
+      "monitored_name": "VSH",
+      "whitelist_name": "VSH TV"
+    },
+    {
+      "monitored_name": "Star News Asia",
+      "whitelist_name": "Star Asia"
+    },
+    {
+      "monitored_name": "WASEB",
+      "whitelist_name": "Waseb TV"
+    },
+    {
+      "monitored_name": "ARYDigitalUK",
+      "whitelist_name": "ARY Digital"
+    },
+    {
+      "monitored_name": "ARYDigitalAsia HD",
+      "whitelist_name": "ARY Digital"
+    },
+    {
+      "monitored_name": "ARYDigitalME",
+      "whitelist_name": "ARY Digital"
+    },
+    {
+      "monitored_name": "ARYNewsUSA",
+      "whitelist_name": "ARY News"
+    },
+    {
+      "monitored_name": "ARYNewsAsia",
+      "whitelist_name": "ARY News"
+    },
+    {
+      "monitored_name": "A SportsHD",
+      "whitelist_name": "A Sports"
+    },
+    {
+      "monitored_name": "ARYDigitalUSA",
+      "whitelist_name": "ARY Digital"
+    },
+    {
+      "monitored_name": "Sab Tv",
+      "whitelist_name": "SAB Entertainment HD"
+    },
+    {
+      "monitored_name": "SNN News",
+      "whitelist_name": "Sachal News Network (SNN)"
+    },
+    {
+      "monitored_name": "Dawn News TV",
+      "whitelist_name": "Dawn News Urdu"
+    },
+    {
+      "monitored_name": "ARYMusik",
+      "whitelist_name": "The Musik"
+    },
+    {
+      "monitored_name": "MINIMAX 2",
+      "whitelist_name": "Minimax"
+    },
+    {
+      "monitored_name": "RT English",
+      "whitelist_name": "RT TV"
+    },
+    {
+      "monitored_name": "Play TV",
+      "whitelist_name": "Play Entertainment"
+    },
+    {
+      "monitored_name": "TV2DAY",
+      "whitelist_name": "TV Today"
+    },
+    {
+      "monitored_name": "92 News HD",
+      "whitelist_name": "Channel 92"
+    },
+    {
+      "monitored_name": "SUN TV",
+      "whitelist_name": "SUN HD"
+    },
+    {
+      "monitored_name": "TIME NEWS HD",
+      "whitelist_name": "Time Network"
+    },
+    {
+      "monitored_name": "Lahore Rung HD",
+      "whitelist_name": "Lahore Rang"
+    }
+  ]
+}

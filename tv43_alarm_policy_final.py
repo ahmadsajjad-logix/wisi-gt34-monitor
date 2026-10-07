@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from email_notifier import EMAIL_FROM, EMAIL_TO, send_message
+from pemra_email_whitelist import filter_email_affected, is_email_qualified
 from wisi_native_events import fetch_slot_log, tuner_unlock_events
 
 POLICY_DB = ROOT / "database" / "tv43_alarm_policy.sqlite3"
@@ -58,6 +59,21 @@ class Condition:
     event_key: str
     affected: tuple[tuple[int, str], ...]
     status_line: str
+
+
+def email_condition(condition: Condition) -> Condition:
+    """Return an email-presentation copy containing qualified services only.
+
+    Alarm detection, episode state, history and monitoring data continue to use
+    the original unfiltered Condition. The whitelist affects email presentation
+    only, and preserves the current monitored/resolved service name.
+    """
+    return Condition(
+        kind=condition.kind,
+        event_key=condition.event_key,
+        affected=filter_email_affected(condition.affected),
+        status_line=condition.status_line,
+    )
 
 
 def utcnow() -> datetime:
@@ -2770,12 +2786,17 @@ def process_snapshot(
         # may belong to a different RF interruption and can otherwise produce an
         # impossible sub-persistence reported outage.
 
-        msg = make_email(
-            meta=meta,
-            condition=condition,
-            event_type="ALARM",
-            started_at=started_at,
-            occurred_at=started_at,
+        qualified_email_condition = email_condition(condition)
+        msg = (
+            make_email(
+                meta=meta,
+                condition=qualified_email_condition,
+                event_type="ALARM",
+                started_at=started_at,
+                occurred_at=started_at,
+            )
+            if qualified_email_condition.affected
+            else None
         )
 
         conn.execute(
@@ -2816,26 +2837,34 @@ def process_snapshot(
             occurred_at=started_at,
             started_at=started_at,
         )
-        queue_email(
-            conn,
-            notification_key=f"ALARM|{event_key}|{started_at.isoformat()}",
-            carrier_key=key,
-            event_type="ALARM",
-            episode_targets=[
-                {
-                    "event_key": event_key,
-                    "started_at": started_at.isoformat(),
-                    "cleared_at": None,
-                }
-            ],
-            message=msg,
-            occurred_at=started_at,
-        )
-        log.error(
-            "ALARM RECORDED + EMAIL QUEUED | %s | %s",
-            event_key,
-            condition.status_line,
-        )
+        if msg is not None:
+            queue_email(
+                conn,
+                notification_key=f"ALARM|{event_key}|{started_at.isoformat()}",
+                carrier_key=key,
+                event_type="ALARM",
+                episode_targets=[
+                    {
+                        "event_key": event_key,
+                        "started_at": started_at.isoformat(),
+                        "cleared_at": None,
+                    }
+                ],
+                message=msg,
+                occurred_at=started_at,
+            )
+            log.error(
+                "ALARM RECORDED + EMAIL QUEUED | %s | %s | qualified_services=%d",
+                event_key,
+                condition.status_line,
+                len(qualified_email_condition.affected),
+            )
+        else:
+            log.info(
+                "ALARM RECORDED + EMAIL SUPPRESSED BY PEMRA WHITELIST | %s | %s",
+                event_key,
+                condition.status_line,
+            )
 
     # All newly missing services on this carrier are one multiplex email.
     if individual_new:
@@ -2855,12 +2884,40 @@ def process_snapshot(
         )
         started_at = min(alarm_starts)
 
-        msg = make_email(
-            meta=meta,
-            condition=batch_condition,
-            event_type="ALARM",
-            started_at=started_at,
-            occurred_at=started_at,
+        email_individual_new = [
+            (event_key, condition, first_seen)
+            for event_key, condition, first_seen in individual_new
+            if any(
+                is_email_qualified(name)
+                for _, name in condition.affected
+            )
+        ]
+
+        email_batch_condition = Condition(
+            kind=batch_condition.kind,
+            event_key=batch_condition.event_key,
+            affected=tuple(
+                sorted(
+                    dict(
+                        affected_item
+                        for _, condition, _ in email_individual_new
+                        for affected_item in condition.affected
+                    ).items()
+                )
+            ),
+            status_line=batch_condition.status_line,
+        )
+
+        msg = (
+            make_email(
+                meta=meta,
+                condition=email_batch_condition,
+                event_type="ALARM",
+                started_at=started_at,
+                occurred_at=started_at,
+            )
+            if email_batch_condition.affected
+            else None
         )
 
         for event_key, condition, _first_seen in individual_new:
@@ -2903,33 +2960,48 @@ def process_snapshot(
                 started_at=started_at,
             )
 
-        queue_email(
-            conn,
-            notification_key=(
-                f"ALARM|{batch_condition.event_key}|{started_at.isoformat()}|"
-                + ",".join(event_key for event_key, _, _ in individual_new)
-            ),
-            carrier_key=key,
-            event_type="ALARM",
-            episode_targets=[
-                {
-                    "event_key": event_key,
-                    "started_at": first_seen.isoformat(),
-                    "cleared_at": None,
-                }
-                for event_key, _, first_seen in individual_new
-            ],
-            message=msg,
-            occurred_at=started_at,
-        )
+        if msg is not None:
+            queue_email(
+                conn,
+                notification_key=(
+                    f"ALARM|{email_batch_condition.event_key}|{started_at.isoformat()}|"
+                    + ",".join(
+                        event_key
+                        for event_key, _, _ in email_individual_new
+                    )
+                ),
+                carrier_key=key,
+                event_type="ALARM",
+                episode_targets=[
+                    {
+                        "event_key": event_key,
+                        "started_at": first_seen.isoformat(),
+                        "cleared_at": None,
+                    }
+                    for event_key, _, first_seen in email_individual_new
+                ],
+                message=msg,
+                occurred_at=started_at,
+            )
 
-        log.error(
-            "MULTIPLEX ALARM RECORDED + EMAIL QUEUED | %s | "
-            "services=%d | sids=%s",
-            key,
-            len(affected),
-            ",".join(str(sid) for sid, _ in affected),
-        )
+            log.error(
+                "MULTIPLEX ALARM RECORDED + EMAIL QUEUED | %s | "
+                "monitored_services=%d | emailed_services=%d | emailed_sids=%s",
+                key,
+                len(affected),
+                len(email_batch_condition.affected),
+                ",".join(
+                    str(sid)
+                    for sid, _ in email_batch_condition.affected
+                ),
+            )
+        else:
+            log.info(
+                "MULTIPLEX ALARM RECORDED + EMAIL SUPPRESSED BY PEMRA WHITELIST | "
+                "%s | monitored_services=%d",
+                key,
+                len(affected),
+            )
 
     # Same alarm still active: refresh only; never repeat email.
     for event_key, condition in continuing_items:
@@ -3068,14 +3140,28 @@ def process_snapshot(
                     condition.status_line,
             )
 
-        msg = make_email(
-            meta=meta,
-            condition=email_condition,
-            event_type="RECOVERY",
-            started_at=started_at,
-            occurred_at=cleared_at,
-            remaining_down=
-                remaining_down,
+        qualified_email_condition = email_condition(
+            email_condition
+        )
+        qualified_remaining_down = filter_email_affected(
+            remaining_down
+        )
+
+        msg = (
+            make_email(
+                meta=meta,
+                condition=qualified_email_condition,
+                event_type="RECOVERY",
+                started_at=started_at,
+                occurred_at=cleared_at,
+                remaining_down=
+                    qualified_remaining_down,
+            )
+            if (
+                qualified_email_condition.affected
+                or qualified_remaining_down
+            )
+            else None
         )
 
         conn.execute(
@@ -3098,22 +3184,34 @@ def process_snapshot(
             started_at=started_at,
             cleared_at=cleared_at,
         )
-        queue_email(
-            conn,
-            notification_key=f"RECOVERY|{event_key}|{cleared_at.isoformat()}",
-            carrier_key=key,
-            event_type="RECOVERY",
-            episode_targets=[
-                {
-                    "event_key": event_key,
-                    "started_at": started_at.isoformat(),
-                    "cleared_at": cleared_at.isoformat(),
-                }
-            ],
-            message=msg,
-            occurred_at=cleared_at,
-        )
-        log.info("RECOVERY RECORDED + EMAIL QUEUED | %s", event_key)
+        if msg is not None:
+            queue_email(
+                conn,
+                notification_key=f"RECOVERY|{event_key}|{cleared_at.isoformat()}",
+                carrier_key=key,
+                event_type="RECOVERY",
+                episode_targets=[
+                    {
+                        "event_key": event_key,
+                        "started_at": started_at.isoformat(),
+                        "cleared_at": cleared_at.isoformat(),
+                    }
+                ],
+                message=msg,
+                occurred_at=cleared_at,
+            )
+            log.info(
+                "RECOVERY RECORDED + EMAIL QUEUED | %s | "
+                "qualified_up=%d | qualified_remaining_down=%d",
+                event_key,
+                len(qualified_email_condition.affected),
+                len(qualified_remaining_down),
+            )
+        else:
+            log.info(
+                "RECOVERY RECORDED + EMAIL SUPPRESSED BY PEMRA WHITELIST | %s",
+                event_key,
+            )
 
     # All service recoveries detected together on this carrier are one email.
     if individual_recoveries:
@@ -3139,12 +3237,40 @@ def process_snapshot(
             status_line="✅ Multiplex service(s) UP",
         )
 
-        msg = make_email(
-            meta=meta,
-            condition=batch_condition,
-            event_type="RECOVERY",
-            started_at=batch_started_at,
-            occurred_at=cleared_at,
+        email_individual_recoveries = [
+            item
+            for item in individual_recoveries
+            if any(
+                is_email_qualified(name)
+                for _, name in item[2].affected
+            )
+        ]
+
+        email_batch_condition = Condition(
+            kind=batch_condition.kind,
+            event_key=batch_condition.event_key,
+            affected=tuple(
+                sorted(
+                    dict(
+                        affected_item
+                        for _, _, condition, _, _ in email_individual_recoveries
+                        for affected_item in condition.affected
+                    ).items()
+                )
+            ),
+            status_line=batch_condition.status_line,
+        )
+
+        msg = (
+            make_email(
+                meta=meta,
+                condition=email_batch_condition,
+                event_type="RECOVERY",
+                started_at=batch_started_at,
+                occurred_at=cleared_at,
+            )
+            if email_batch_condition.affected
+            else None
         )
 
         for event_key, row, condition, started_at, _recovery_first_seen in individual_recoveries:
@@ -3169,42 +3295,54 @@ def process_snapshot(
                 cleared_at=cleared_at,
             )
 
-        queue_email(
-            conn,
-            notification_key=(
-                f"RECOVERY|{batch_condition.event_key}|{cleared_at.isoformat()}|"
-                + ",".join(
-                    event_key
-                    for event_key, _, _, _, _ in individual_recoveries
-                )
-            ),
-            carrier_key=key,
-            event_type="RECOVERY",
-            episode_targets=[
-                {
-                    "event_key": event_key,
-                    "started_at": episode_started_at.isoformat(),
-                    "cleared_at": cleared_at.isoformat(),
-                }
-                for (
-                    event_key,
-                    _,
-                    _,
-                    episode_started_at,
-                    _,
-                ) in individual_recoveries
-            ],
-            message=msg,
-            occurred_at=cleared_at,
-        )
+        if msg is not None:
+            queue_email(
+                conn,
+                notification_key=(
+                    f"RECOVERY|{email_batch_condition.event_key}|{cleared_at.isoformat()}|"
+                    + ",".join(
+                        event_key
+                        for event_key, _, _, _, _ in email_individual_recoveries
+                    )
+                ),
+                carrier_key=key,
+                event_type="RECOVERY",
+                episode_targets=[
+                    {
+                        "event_key": event_key,
+                        "started_at": episode_started_at.isoformat(),
+                        "cleared_at": cleared_at.isoformat(),
+                    }
+                    for (
+                        event_key,
+                        _,
+                        _,
+                        episode_started_at,
+                        _,
+                    ) in email_individual_recoveries
+                ],
+                message=msg,
+                occurred_at=cleared_at,
+            )
 
-        log.info(
-            "MULTIPLEX RECOVERY RECORDED + EMAIL QUEUED | %s | "
-            "services=%d | sids=%s",
-            key,
-            len(affected),
-            ",".join(str(sid) for sid, _ in affected),
-        )
+            log.info(
+                "MULTIPLEX RECOVERY RECORDED + EMAIL QUEUED | %s | "
+                "monitored_services=%d | emailed_services=%d | emailed_sids=%s",
+                key,
+                len(affected),
+                len(email_batch_condition.affected),
+                ",".join(
+                    str(sid)
+                    for sid, _ in email_batch_condition.affected
+                ),
+            )
+        else:
+            log.info(
+                "MULTIPLEX RECOVERY RECORDED + EMAIL SUPPRESSED BY PEMRA WHITELIST | "
+                "%s | monitored_services=%d",
+                key,
+                len(affected),
+            )
 
 
 
